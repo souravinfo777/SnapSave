@@ -54,6 +54,25 @@ public final class Resolvers {
             Pattern.compile("https?://[^\\s\"'<>\\\\]+\\.(?:mp4|m4a|mp3|webm|m3u8|mov)(?:\\?[^\\s\"'<>\\\\]*)?",
                     Pattern.CASE_INSENSITIVE);
 
+    /** Detailed result for callers that need a safe, user-facing failure reason. */
+    public static final class Outcome {
+        public final ResolvedMedia media;
+        public final String errorCode;
+        public final String message;
+
+        public Outcome(ResolvedMedia media, String errorCode, String message) {
+            this.media = media;
+            this.errorCode = errorCode == null ? "network" : errorCode;
+            this.message = message == null ? "Couldn't resolve this link." : message;
+        }
+
+        public boolean isSuccess() {
+            return media != null && media.hasAnything();
+        }
+    }
+
+    private static final long RESOLVE_BUDGET_MS = 30000L;
+
     private Resolvers() {
     }
 
@@ -138,6 +157,35 @@ public final class Resolvers {
     }
 
     public static ResolvedMedia resolve(String url) {
+        return resolveDetailed(url).media;
+    }
+
+    public static Outcome resolveDetailed(String url) {
+        Http.RequestScope scope = Http.openRequestScope(RESOLVE_BUDGET_MS);
+        try {
+            Http.checkRequestScope();
+            ResolvedMedia media = resolveWithinScope(url);
+            Http.checkRequestScope();
+            return outcome(media != null && media.hasAnything() ? media : null, Http.failureCode());
+        } catch (Http.Cancelled e) {
+            return outcome(null, ResolveFailure.Code.CANCELLED);
+        } catch (Http.Timeout e) {
+            return outcome(null, ResolveFailure.Code.TIMEOUT);
+        } catch (Throwable t) {
+            Http.noteFailure(t);
+            return outcome(null, Http.failureCode());
+        } finally {
+            scope.close();
+        }
+    }
+
+    private static Outcome outcome(ResolvedMedia media, ResolveFailure.Code code) {
+        ResolveFailure.Code c = media != null ? ResolveFailure.Code.NONE
+                : (code == null || code == ResolveFailure.Code.NONE ? ResolveFailure.Code.UNSUPPORTED : code);
+        return new Outcome(media, c.name().toLowerCase(java.util.Locale.US), ResolveFailure.messageFor(c));
+    }
+
+    private static ResolvedMedia resolveWithinScope(String url) throws java.io.IOException {
         if (url == null || url.trim().isEmpty()) {
             return null;
         }
@@ -166,6 +214,7 @@ public final class Resolvers {
                     return fs;
                 }
             }
+            Http.checkRequestScope();
             return resolveYouTube(videoId(url), url);
         }
 
@@ -197,7 +246,8 @@ public final class Resolvers {
 
         String server = com.snapsave.app.util.Prefs.resolver();
         if (server != null && !server.isEmpty() && within(start, 25000)) {
-            ResolvedMedia viaServer = ServerResolver.resolve(server, com.snapsave.app.util.Prefs.apiKey(), url);
+            Http.checkRequestScope();
+            ResolvedMedia viaServer = ServerResolver.resolve(server, com.snapsave.app.util.Prefs.resolverToken(), url);
             if (rich(viaServer)) {
                 return finish(viaServer, url);
             }
@@ -221,7 +271,7 @@ public final class Resolvers {
     }
 
     private static boolean within(long start, long budgetMs) {
-        return System.currentTimeMillis() - start < budgetMs;
+        return !Http.requestExpired() && System.currentTimeMillis() - start < budgetMs;
     }
 
     /** A result is "rich" when it offers video plus a separate audio track (so the sheet can
@@ -260,6 +310,7 @@ public final class Resolvers {
             return;   // metadata is already complete — don't spend seconds re-fetching the page
         }
         try {
+            Http.checkRequestScope();
             if (isYouTube(url)) {
                 String oe = Http.get("https://www.youtube.com/oembed?format=json&url="
                         + URLEncoder.encode(url, "UTF-8"), null, Http.UA);
@@ -355,6 +406,7 @@ public final class Resolvers {
             addAudio(r, d.optString("music", null), "MP3 • Original sound");
             return r;
         } catch (Throwable t) {
+            Http.noteFailure(t);
             return null;
         }
     }
@@ -435,6 +487,7 @@ public final class Resolvers {
             r.progressive = true;
             return r.hasAnything() ? r : null;
         } catch (Throwable t) {
+            Http.noteFailure(t);
             return null;
         }
     }

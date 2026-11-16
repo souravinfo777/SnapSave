@@ -5,6 +5,8 @@
 
 # packaged binaries (rebuilt by build.sh)
 *.apk
+# Versioned APKs intentionally shared with the source.
+!/APK/SnapSave-v*.apk
 *.idsig
 *.ap_
 *.dex

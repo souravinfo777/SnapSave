@@ -17,6 +17,7 @@ import android.widget.VideoView;
 import com.snapsave.app.App;
 import com.snapsave.app.R;
 import com.snapsave.app.engine.DownloadTask;
+import com.snapsave.app.engine.MediaTypes;
 import com.snapsave.app.util.Util;
 import com.snapsave.app.util.Insets;
 
@@ -65,6 +66,22 @@ public class PlayerActivity extends Activity {
         String src = path != null ? path : url;
         if (src == null || src.trim().isEmpty()) {
             android.widget.Toast.makeText(this, "Nothing to play.", android.widget.Toast.LENGTH_SHORT).show();
+            finish();
+            return;
+        }
+        String mediaType = MediaTypes.mediaType(getIntent().getStringExtra("mimeType"),
+                getIntent().getStringExtra("mediaType"), null, path, url);
+        if (MediaTypes.IMAGE.equals(mediaType)) {
+            android.widget.Toast.makeText(this, "Image opening is not supported here yet.",
+                    android.widget.Toast.LENGTH_SHORT).show();
+            finish();
+            return;
+        }
+        if (MediaTypes.AUDIO.equals(mediaType)) {
+            Intent audio = new Intent(this, MusicPlayerActivity.class);
+            audio.putExtras(getIntent());
+            audio.putExtra("path", src);
+            startActivity(audio);
             finish();
             return;
         }
@@ -220,7 +237,7 @@ public class PlayerActivity extends Activity {
         List<DownloadTask> done = App.get().downloads().completed();
         int shown = 0;
         for (final DownloadTask t : done) {
-            if (t.outFile == null || !t.outFile.exists() || "mp3".equals(t.kind) || "m4a".equals(t.kind)) {
+            if (t.outFile == null || !t.outFile.exists() || !MediaTypes.isVideo(t)) {
                 continue;
             }
             View row = LayoutInflater.from(this).inflate(R.layout.item_video, container, false);
@@ -235,6 +252,8 @@ public class PlayerActivity extends Activity {
                     i.putExtra("path", t.outFile.getAbsolutePath());
                     i.putExtra("title", t.title);
                     i.putExtra("author", t.author);
+                    i.putExtra("mimeType", t.mimeType);
+                    i.putExtra("mediaType", MediaTypes.mediaType(t));
                     startActivity(i);
                 }
             });

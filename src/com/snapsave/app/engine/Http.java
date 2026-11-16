@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.SocketTimeoutException;
 import java.net.URL;
 
 /** Minimal HTTP client (HttpURLConnection) with progress + cancellation for the download engine. */
@@ -27,17 +28,166 @@ public final class Http {
         }
     }
 
+    /** A response failure that preserves status without retaining response secrets. */
+    public static class HttpException extends IOException {
+        public final int status;
+
+        public HttpException(int status) {
+            super("HTTP " + status);
+            this.status = status;
+        }
+    }
+
+    /** Internal timeout marker used when the resolver request budget expires. */
+    public static class Timeout extends SocketTimeoutException {
+        public Timeout() {
+            super("resolver timeout");
+        }
+    }
+
+    /** Cooperative request scope used by resolver calls on the current thread. */
+    public static final class RequestScope implements AutoCloseable {
+        private final long deadlineNanos;
+        private final RequestScope previous;
+        private volatile boolean cancelled;
+        private boolean closed;
+
+        private RequestScope(long budgetMs, RequestScope previous) {
+            this.previous = previous;
+            long duration = Math.min(Math.max(0L, budgetMs), Integer.MAX_VALUE) * 1000000L;
+            if (previous != null) {
+                duration = Math.min(duration, Math.max(0L, previous.deadlineNanos - System.nanoTime()));
+            }
+            this.deadlineNanos = System.nanoTime() + duration;
+        }
+
+        public void cancel() {
+            cancelled = true;
+        }
+
+        public boolean cancelled() {
+            return cancelled || Thread.currentThread().isInterrupted()
+                    || (previous != null && previous.cancelled());
+        }
+
+        public long remainingMs() {
+            if (cancelled()) {
+                return 0;
+            }
+            long remaining = deadlineNanos - System.nanoTime();
+            return remaining > 0 ? Math.max(1L, remaining / 1000000L) : 0;
+        }
+
+        public void check() throws IOException {
+            if (cancelled()) {
+                throw new Cancelled();
+            }
+            if (remainingMs() <= 0) {
+                throw new Timeout();
+            }
+        }
+
+        private ResolveFailure.Code failureCode = ResolveFailure.Code.NONE;
+
+        private void noteFailure(ResolveFailure.Code code) {
+            failureCode = ResolveFailure.stronger(failureCode, code);
+        }
+
+        private ResolveFailure.Code failureCode() {
+            return failureCode;
+        }
+
+        @Override
+        public void close() {
+            if (!closed) {
+                closed = true;
+                if (CURRENT_SCOPE.get() == this) {
+                    if (previous == null) {
+                        CURRENT_SCOPE.remove();
+                    } else {
+                        CURRENT_SCOPE.set(previous);
+                    }
+                }
+            }
+        }
+    }
+
+    private static final ThreadLocal<RequestScope> CURRENT_SCOPE = new ThreadLocal<RequestScope>();
+
+    /** Open a resolver scope with a monotonic overall deadline. Close it on the same thread. */
+    public static RequestScope openRequestScope(long budgetMs) {
+        RequestScope scope = new RequestScope(budgetMs, CURRENT_SCOPE.get());
+        CURRENT_SCOPE.set(scope);
+        return scope;
+    }
+
+    public static RequestScope requestScope() {
+        return CURRENT_SCOPE.get();
+    }
+
+    static void checkRequestScope() throws IOException {
+        RequestScope scope = CURRENT_SCOPE.get();
+        if (scope != null) {
+            scope.check();
+        }
+    }
+
+    static boolean requestExpired() {
+        RequestScope scope = CURRENT_SCOPE.get();
+        return scope != null && scope.remainingMs() <= 0;
+    }
+
+    static void noteFailure(Throwable error) {
+        RequestScope scope = CURRENT_SCOPE.get();
+        if (scope != null) {
+            scope.noteFailure(ResolveFailure.codeFor(error));
+        }
+    }
+
+    static void noteFailureStatus(int status) {
+        RequestScope scope = CURRENT_SCOPE.get();
+        if (scope != null) {
+            scope.noteFailure(ResolveFailure.codeForStatus(status));
+        }
+    }
+
+    static void noteFailureText(String text) {
+        RequestScope scope = CURRENT_SCOPE.get();
+        if (scope != null) {
+            scope.noteFailure(ResolveFailure.codeForText(text));
+        }
+    }
+
+    static ResolveFailure.Code failureCode() {
+        RequestScope scope = CURRENT_SCOPE.get();
+        return scope == null ? ResolveFailure.Code.NONE : scope.failureCode();
+    }
+
+    private static int boundedTimeout(int configuredMs) throws IOException {
+        RequestScope scope = CURRENT_SCOPE.get();
+        if (scope == null) {
+            return configuredMs;
+        }
+        long remaining = scope.remainingMs();
+        if (remaining <= 0) {
+            scope.check();
+        }
+        return (int) Math.max(1L, Math.min((long) configuredMs, remaining));
+    }
+
     private Http() {
     }
 
     public static String get(String url, String referer, String ua) throws IOException {
         HttpURLConnection c = open(url, referer, ua);
         try {
+            checkRequestScope();
             int code = c.getResponseCode();
             InputStream in = code >= 400 ? c.getErrorStream() : c.getInputStream();
-            String body = readAll(in);
+            String body = readAll(in, c);
             if (code >= 400) {
-                throw new IOException("HTTP " + code);
+                noteFailureStatus(code);
+                throw new HttpException(code);
             }
             return body;
         } finally {
@@ -85,10 +235,11 @@ public final class Http {
         String u = url;
         for (int hop = 0; hop < 4; hop++) {
             requireHttps(u);
+            checkRequestScope();
             HttpURLConnection c = (HttpURLConnection) new URL(u).openConnection();
             c.setInstanceFollowRedirects(false);
-            c.setConnectTimeout(connectMs);
-            c.setReadTimeout(readMs);
+            c.setConnectTimeout(boundedTimeout(connectMs));
+            c.setReadTimeout(boundedTimeout(readMs));
             c.setRequestProperty("User-Agent", UA);
             c.setRequestProperty("Accept", "application/json");
             c.setRequestProperty("Accept-Language", "en-US,en;q=0.9");
@@ -111,13 +262,15 @@ public final class Http {
                 } else {
                     c.setRequestMethod(method);
                 }
+                checkRequestScope();
                 int code = c.getResponseCode();
                 if (code >= 300 && code < 400) {
                     String loc = c.getHeaderField("Location");
                     String next = loc == null ? null : new URL(new URL(u), loc).toString();
                     c.disconnect();
                     if (next == null) {
-                        throw new IOException("HTTP " + code);
+                        noteFailureStatus(code);
+                        throw new HttpException(code);
                     }
                     if (!u.equalsIgnoreCase(next) && !sameOrigin(origin, next)) {
                         throw new IOException("redirect off-origin blocked");
@@ -126,7 +279,11 @@ public final class Http {
                     continue;
                 }
                 InputStream in = code >= 400 ? c.getErrorStream() : c.getInputStream();
-                return new Resp(code, readAll(in));
+                String responseBody = readAll(in, c);
+                if (code >= 400) {
+                    noteFailureStatus(code);
+                }
+                return new Resp(code, responseBody);
             } finally {
                 c.disconnect();
             }
@@ -168,11 +325,13 @@ public final class Http {
             OutputStream os = c.getOutputStream();
             os.write(json.getBytes("UTF-8"));
             os.close();
+            checkRequestScope();
             int code = c.getResponseCode();
             InputStream in = code >= 400 ? c.getErrorStream() : c.getInputStream();
-            String body = readAll(in);
+            String body = readAll(in, c);
             if (code >= 400) {
-                throw new IOException("HTTP " + code);
+                noteFailureStatus(code);
+                throw new HttpException(code);
             }
             return body;
         } finally {
@@ -193,7 +352,8 @@ public final class Http {
         Resp r = apiCall(url, "POST", utf8(sb.toString()),
                 "multipart/form-data; boundary=" + boundary, null, bearer, 15000, 40000);
         if (r.code >= 400) {
-            throw new IOException("HTTP " + r.code + (r.body == null ? "" : ": " + r.body));
+            noteFailureStatus(r.code);
+            throw new HttpException(r.code);
         }
         return r.body;
     }
@@ -211,9 +371,10 @@ public final class Http {
 
     private static HttpURLConnection open(String url, String referer, String ua) throws IOException {
         requireHttps(url);
+        checkRequestScope();
         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
-        c.setConnectTimeout(12000);
-        c.setReadTimeout(18000);
+        c.setConnectTimeout(boundedTimeout(12000));
+        c.setReadTimeout(boundedTimeout(18000));
         c.setInstanceFollowRedirects(true);
         c.setRequestProperty("User-Agent", ua == null ? UA : ua);
         if (referer != null) {
@@ -227,7 +388,15 @@ public final class Http {
     private static String originOf(String url) {
         try {
             URL u = new URL(url);
-            return u.getProtocol() + "://" + u.getHost();
+            String protocol = u.getProtocol().toLowerCase(java.util.Locale.US);
+            String host = u.getHost().toLowerCase(java.util.Locale.US);
+            int port = u.getPort();
+            if (port < 0) {
+                port = u.getDefaultPort();
+            }
+            boolean defaultPort = ("https".equals(protocol) && port == 443)
+                    || ("http".equals(protocol) && port == 80);
+            return protocol + "://" + host + (port > 0 && !defaultPort ? ":" + port : "");
         } catch (Exception e) {
             return null;
         }
@@ -318,7 +487,8 @@ public final class Http {
         String ref = referer;
         IOException last = null;
         for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-            if (token != null && token.cancelled) {
+            checkRequestScope();
+            if (Thread.currentThread().isInterrupted() || (token != null && token.cancelled)) {
                 throw new Cancelled();
             }
             long already = out != null && out.exists() ? out.length() : 0;
@@ -364,12 +534,22 @@ public final class Http {
                     throw e;                      // a real client error won't heal itself
                 }
                 // Transient socket error / timeout: back off and resume from the partial file.
-                try {
-                    Thread.sleep(700L * attempt);
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                    throw e;
+                long pause = 700L * attempt;
+                while (pause > 0) {
+                    checkRequestScope();
+                    if (token != null && token.cancelled) {
+                        throw new Cancelled();
+                    }
+                    long slice = Math.min(100L, pause);
+                    try {
+                        Thread.sleep(slice);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        throw new Cancelled();
+                    }
+                    pause -= slice;
                 }
+                checkRequestScope();
             }
         }
         throw last == null ? new IOException("download failed") : last;
@@ -383,9 +563,10 @@ public final class Http {
         HttpURLConnection c = null;
         int code = -1;
         for (int hop = 0; hop <= 5; hop++) {
+            checkRequestScope();
             c = open(cur, referer, ua);
-            c.setConnectTimeout(20000);
-            c.setReadTimeout(60000);      // a slow mobile stream must not be mistaken for a dead one
+            c.setConnectTimeout(boundedTimeout(20000));
+            c.setReadTimeout(boundedTimeout(60000));      // a slow mobile stream must not be mistaken for a dead one
             c.setRequestProperty("Accept", "*/*");
             c.setRequestProperty("Accept-Encoding", "identity");
             if (already > 0) {
@@ -400,7 +581,7 @@ public final class Http {
             c.disconnect();
             c = null;
             if (next == null) {
-                throw new IOException("HTTP " + code);
+                throw new HttpException(code);
             }
             requireHttps(next);
             cur = next;
@@ -424,10 +605,10 @@ public final class Http {
                     }
                     return;
                 }
-                throw new IOException("HTTP 416");
+                throw new HttpException(416);
             }
             if (code >= 400) {
-                throw new IOException("HTTP " + code);
+                throw new HttpException(code);
             }
 
             boolean resume = code == 206 && already > 0;
@@ -463,7 +644,17 @@ public final class Http {
                 byte[] buf = new byte[65536];
                 long lastReport = 0;
                 int n;
-                while ((n = in.read(buf)) > 0) {
+                while (true) {
+                    checkRequestScope();
+                    if (Thread.currentThread().isInterrupted() || (token != null && token.cancelled)) {
+                        throw new Cancelled();
+                    }
+                    c.setReadTimeout(boundedTimeout(60000));
+                    n = in.read(buf);
+                    checkRequestScope();
+                    if (n <= 0) {
+                        break;
+                    }
                     if (token != null && token.cancelled) {
                         throw new Cancelled();
                     }
@@ -504,18 +695,29 @@ public final class Http {
     /** Hard cap on buffered response bodies — a hostile/huge page must not exhaust the heap. */
     private static final int MAX_BODY = 8 * 1024 * 1024;
 
-    private static String readAll(InputStream in) throws IOException {
+    private static String readAll(InputStream in, HttpURLConnection connection) throws IOException {
+        checkRequestScope();
         if (in == null) {
             return "";
         }
-        ByteArrayOutputStream bos = new ByteArrayOutputStream();
-        byte[] buf = new byte[16384];
-        int n;
-        while (bos.size() < MAX_BODY && (n = in.read(buf)) > 0) {
-            bos.write(buf, 0, n);
+        try {
+            ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            byte[] buf = new byte[16384];
+            int n;
+            while (bos.size() < MAX_BODY) {
+                checkRequestScope();
+                connection.setReadTimeout(boundedTimeout(18000));
+                n = in.read(buf, 0, Math.min(buf.length, MAX_BODY - bos.size()));
+                checkRequestScope();
+                if (n <= 0) {
+                    break;
+                }
+                bos.write(buf, 0, n);
+            }
+            return new String(bos.toByteArray(), "UTF-8");
+        } finally {
+            in.close();
         }
-        in.close();
-        return new String(bos.toByteArray(), "UTF-8");
     }
 
     /** Simple cooperative cancellation token shared with the worker thread. */

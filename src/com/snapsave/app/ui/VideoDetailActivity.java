@@ -34,6 +34,7 @@ public class VideoDetailActivity extends Activity {
     private ImageView previewImg;
     private ResolvedMedia resolved;
     private boolean resolving;
+    private Thread resolverThread;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -209,16 +210,11 @@ public class VideoDetailActivity extends Activity {
         }
         resolving = true;
         downloadLabel.setText("Resolving…");
-        new Thread(new Runnable() {
+        resolverThread = new Thread(new Runnable() {
             @Override
             public void run() {
-                ResolvedMedia resolvedMedia = null;
-                try {
-                    resolvedMedia = Resolvers.resolve(url);
-                } catch (Throwable ignored) {
-                    // fall through with a null result so the button never stays on "Resolving..."
-                }
-                final ResolvedMedia r = resolvedMedia;
+                final Resolvers.Outcome outcome = Resolvers.resolveDetailed(url);
+                final ResolvedMedia r = outcome.media;
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
@@ -250,7 +246,8 @@ public class VideoDetailActivity extends Activity {
                         }
                         if (r == null || !r.hasAnything()) {
                             // Leave an actionable state instead of an enabled button that only toasts.
-                            downloadLabel.setText("Unavailable — tap to retry");
+                            downloadLabel.setText("Retry download");
+                            Toast.makeText(VideoDetailActivity.this, outcome.message, Toast.LENGTH_LONG).show();
                             return;
                         }
                         downloadLabel.setText("Download Video");
@@ -260,7 +257,14 @@ public class VideoDetailActivity extends Activity {
                     }
                 });
             }
-        }, "resolve").start();
+        }, "resolve");
+        resolverThread.start();
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (resolverThread != null) resolverThread.interrupt();
+        super.onDestroy();
     }
 
     private String bestQuality(ResolvedMedia r) {

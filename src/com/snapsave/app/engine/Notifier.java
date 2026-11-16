@@ -108,14 +108,21 @@ public final class Notifier {
 
     /** Replace this task's progress line with a completion notification. */
     public static void done(Context c, int id, String title, String path) {
+        done(c, id, title, path, null);
+    }
+
+    public static void done(Context c, int id, String title, String path, String warning) {
         try {
             NotificationManager m = nm(c);
             if (m == null || !enabled(c)) {
                 return;
             }
+            boolean hasWarning = warning != null && !warning.isEmpty();
             String body = (title == null ? "Media" : title) + (path == null ? "" : "\n" + path);
+            if (hasWarning) body += "\n" + ("video_only_no_audio".equals(warning)
+                    ? "Video saved without an audio track" : "Check the download details for a warning");
             Notification.Builder b = builder(c)
-                    .setContentTitle(c.getString(R.string.download_complete))
+                    .setContentTitle(hasWarning ? "Download completed with warning" : c.getString(R.string.download_complete))
                     .setContentText(title == null ? "" : title)
                     .setStyle(new Notification.BigTextStyle().bigText(body))
                     .setSmallIcon(R.drawable.ic_download)

@@ -5,8 +5,6 @@ import com.snaptube.taskManager.M4ANativeLib;
 import com.snaptube.taskManager.M4a2Mp3Task;
 
 import java.io.File;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Thin wrappers around SnapTube's native media engine (libvideo_v1.so / libmp3cvt.so).
@@ -46,26 +44,20 @@ public final class NativeStreams {
         if (!CombinTask.isSupported()) {
             return false;
         }
-        final CountDownLatch latch = new CountDownLatch(1);
         final boolean[] ok = {false};
         CombinTask task = new CombinTask(audio.getAbsolutePath(), video.getAbsolutePath(), output.getAbsolutePath());
         task.setListener(new CombinTask.Listener() {
             @Override
             public void onFinish(int code) {
                 ok[0] = code == CombinTask.COMB_SUCCESS;
-                latch.countDown();
             }
 
             @Override
             public void onProgress(int current, int total) {
             }
         });
-        new Thread(task, "combvideo").start();
-        try {
-            latch.await(30, TimeUnit.MINUTES);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
+        // The caller is already a worker. Keep ownership until native writes have stopped.
+        task.run();
         return ok[0];
     }
 
@@ -74,26 +66,19 @@ public final class NativeStreams {
         if (!M4a2Mp3Task.isSupported()) {
             return false;
         }
-        final CountDownLatch latch = new CountDownLatch(1);
         final boolean[] ok = {false};
         M4a2Mp3Task task = new M4a2Mp3Task(input.getAbsolutePath(), output.getAbsolutePath(), bitrate);
         task.setListener(new M4a2Mp3Task.Listener() {
             @Override
             public void onFinish(boolean success) {
                 ok[0] = success;
-                latch.countDown();
             }
 
             @Override
             public void onProgress(int percent) {
             }
         });
-        new Thread(task, "m4a2mp3").start();
-        try {
-            latch.await(30, TimeUnit.MINUTES);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
+        task.run();
         return ok[0];
     }
 

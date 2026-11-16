@@ -2,8 +2,6 @@ package com.snapsave.app;
 
 import android.app.Application;
 import android.content.Context;
-import android.os.Handler;
-import android.os.Looper;
 
 import com.snapsave.app.engine.DownloadManager;
 import com.snapsave.app.engine.Notifier;
@@ -20,16 +18,20 @@ public class App extends Application {
         Notifier.ensureChannel(this);
         downloadManager = new DownloadManager(this);
         downloadManager.loadPersisted();
-        // Downloads that were running when the process died are restored as paused, then
-        // resumed once the first screen has attached its listener (avoids a flash of 0%).
-        new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                if (downloadManager != null) {
-                    downloadManager.resumeRecovered();
-                }
+        // Recovery starts when an activity is visible or the foreground service starts.
+        // Starting a dataSync service from Application can violate background restrictions.
+        registerActivityLifecycleCallbacks(new ActivityLifecycleCallbacks() {
+            @Override public void onActivityResumed(android.app.Activity activity) {
+                downloadManager.resumeRecovered();
+                downloadManager.onNetworkChanged();
             }
-        }, 1200);
+            @Override public void onActivityCreated(android.app.Activity activity, android.os.Bundle state) { }
+            @Override public void onActivityStarted(android.app.Activity activity) { }
+            @Override public void onActivityPaused(android.app.Activity activity) { }
+            @Override public void onActivityStopped(android.app.Activity activity) { }
+            @Override public void onActivitySaveInstanceState(android.app.Activity activity, android.os.Bundle state) { }
+            @Override public void onActivityDestroyed(android.app.Activity activity) { }
+        });
     }
 
     public static App get() {

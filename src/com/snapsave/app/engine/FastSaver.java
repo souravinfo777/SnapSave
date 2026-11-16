@@ -46,6 +46,9 @@ public final class FastSaver {
         int start = com.snapsave.app.util.Prefs.currentKeyIndex() % n;
         String lastBody = null;
         for (int i = 0; i < n; i++) {
+            if (Http.requestExpired() || Thread.currentThread().isInterrupted()) {
+                break;
+            }
             int idx = (start + i) % n;
             String key = keys.get(idx);
             if (KeyPool.cooling(key)) {
@@ -57,6 +60,7 @@ public final class FastSaver {
                         : Http.postResp(url, jsonBody, key);
                 if (r.code == 200) {
                     if (quotaExhausted(r.body)) {
+                        Http.noteFailureText(r.body);
                         // HTTP 200 with ok:false + a quota message: rest this key and try the next.
                         KeyPool.cool(key, 3600_000L);
                         lastBody = r.body;
@@ -88,7 +92,11 @@ public final class FastSaver {
                 }
                 return r.body;
             } catch (Throwable t) {
+                Http.noteFailure(t);
                 lastBody = null;
+                if (Http.requestExpired() || Thread.currentThread().isInterrupted()) {
+                    break;
+                }
             }
         }
         return lastBody;
@@ -103,6 +111,7 @@ public final class FastSaver {
             }
             JSONObject j = new JSONObject(resp);
             if (!j.optBoolean("ok", false)) {
+                Http.noteFailureText(j.optString("error", "") + " " + j.optString("message", ""));
                 return null;
             }
             ResolvedMedia r = new ResolvedMedia();
@@ -179,6 +188,7 @@ public final class FastSaver {
             }
             JSONObject j = new JSONObject(resp);
             if (!j.optBoolean("ok", false)) {
+                Http.noteFailureText(j.optString("error", "") + " " + j.optString("message", ""));
                 return null;
             }
             String du = j.optString("download_url", null);
@@ -197,6 +207,7 @@ public final class FastSaver {
             }
             JSONObject j = new JSONObject(resp);
             if (!j.optBoolean("ok", false)) {
+                Http.noteFailureText(j.optString("error", "") + " " + j.optString("message", ""));
                 return null;
             }
             ResolvedMedia r = new ResolvedMedia();

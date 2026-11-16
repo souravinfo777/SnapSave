@@ -16,6 +16,9 @@ public class StreamOption {
     public String serverFormat;
     /** This "audio" row is really a video file whose sound is extracted locally. */
     public boolean sourceIsVideo;
+    /** Source metadata for locally converted options. */
+    public String sourceMimeType;
+    public int sourceBitrate;
 
     public StreamOption() {
     }

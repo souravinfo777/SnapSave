@@ -11,6 +11,7 @@ import com.snapsave.app.App;
 import com.snapsave.app.R;
 import com.snapsave.app.engine.DownloadManager;
 import com.snapsave.app.engine.DownloadTask;
+import com.snapsave.app.engine.MediaTypes;
 import com.snapsave.app.util.Util;
 
 import java.util.List;
@@ -100,8 +101,10 @@ public class FilesScreen extends Screen {
         List<DownloadTask> done = dm.completed();
         int shown = 0;
         for (final DownloadTask t : done) {
-            boolean audio = "mp3".equals(t.kind) || "m4a".equals(t.kind);
-            if (filter == 0 && audio) {
+            String mediaType = MediaTypes.mediaType(t);
+            boolean audio = MediaTypes.AUDIO.equals(mediaType);
+            boolean video = MediaTypes.VIDEO.equals(mediaType);
+            if (filter == 0 && !video) {
                 continue;
             }
             if (filter == 1 && !audio) {
@@ -109,6 +112,10 @@ public class FilesScreen extends Screen {
             }
             View row = LayoutInflater.from(act).inflate(R.layout.item_video, container, false);
             ((View) row.findViewById(R.id.thumb_bg)).setBackgroundResource(Util.grad(t.grad));
+            if (MediaTypes.IMAGE.equals(mediaType)) {
+                row.findViewById(R.id.thumb_duration).setVisibility(View.GONE);
+                row.findViewById(R.id.video_action_icon).setVisibility(View.GONE);
+            }
             ((TextView) row.findViewById(R.id.thumb_duration)).setText(t.label);
             ((TextView) row.findViewById(R.id.video_title)).setText(t.title);
             ((TextView) row.findViewById(R.id.video_meta)).setText(
@@ -140,12 +147,25 @@ public class FilesScreen extends Screen {
                     android.widget.Toast.LENGTH_SHORT).show();
             return;
         }
-        boolean audio = "mp3".equals(t.kind) || "m4a".equals(t.kind);
+        String mediaType = MediaTypes.mediaType(t);
+        if (MediaTypes.IMAGE.equals(mediaType)) {
+            android.widget.Toast.makeText(act, "Image opening is not supported here yet.",
+                    android.widget.Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (!MediaTypes.AUDIO.equals(mediaType) && !MediaTypes.VIDEO.equals(mediaType)) {
+            android.widget.Toast.makeText(act, "This file type cannot be opened here.",
+                    android.widget.Toast.LENGTH_SHORT).show();
+            return;
+        }
+        boolean audio = MediaTypes.AUDIO.equals(mediaType);
         Intent i = new Intent(act, audio ? MusicPlayerActivity.class : PlayerActivity.class);
         i.putExtra("path", t.outFile.getAbsolutePath());
         i.putExtra("title", t.title);
         i.putExtra("author", t.author);
         i.putExtra("grad", t.grad);
+        i.putExtra("mimeType", t.mimeType);
+        i.putExtra("mediaType", mediaType);
         act.startActivity(i);
     }
 }

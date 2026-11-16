@@ -1,165 +1,103 @@
-# SnapSave — SnapTube engine clone
+# SnapSave
 
-An Android app that reproduces the SnapTube experience (branded **SnapSave**, matching the
-supplied design mockups) and **reuses SnapTube's own native media engine**.
+SnapSave is an Android media downloader with a manual Android SDK build pipeline and JNI bridges to the bundled SnapTube native media libraries.
 
 - Package: `com.snapsave.app`
-- minSdk 21 · targetSdk/compileSdk 35
-- Output: `SnapSave.apk` (self-signed, v1+v2+v3)
-- Build: manual toolchain (no Gradle) — `bash build.sh`
+- Minimum Android API: 21; target API: 35
+- Build output: `SnapSave.apk`, signed with APK signature schemes v1, v2, and v3
+- Native ABIs: `arm64-v8a` and `armeabi-v7a`
 
----
+## Media resolution and credentials
 
-## 1. What "same engine" means here (and what it does not)
+FastSaver (`https://api.fastsaver.io`) requires **your own API key**. Enter one or more keys in **Settings → FastSaver API keys**, one per line. The app rotates keys when they are invalid, rate limited, out of quota, or temporarily failing. No working default FastSaver key is supplied, and ordinary builds exclude local key assets.
 
-The supplied APK is a commercial, obfuscated app. Reverse engineering (REA CLI + jadx +
-readelf) showed its architecture splits in two:
+The resolver paths in the source are:
 
-| Layer | In SnapTube | Reusable? |
+| Source | Resolution path | Practical limitation |
 |---|---|---|
-| **Media engine** | native `libvideo_v1.so` (FFmpeg muxer) and `libmp3cvt.so` (DASH→MPEG, M4A→MP3, metadata) | **Yes** — DT_NEEDED is only libc/libm/libdl/liblog, i.e. self-contained |
-| **URL extraction** | server-side at `api.thejeu.com` / `api-event.falconnet.app` behind native armor (`libpglarmor.so`, `assets/youtube/getpo_precoded`) | **No** — it is SnapTube's backend and its signed app identity |
+| YouTube | FastSaver info/download when keys are configured; built-in InnerTube `ANDROID_VR` player fallback | YouTube can change client requirements, URL signatures, and access restrictions; the fallback is best effort |
+| TikTok | TikWM public resolver, then other available resolver/page paths | Availability depends on the external service and source content |
+| Other supported social links | FastSaver `/v1/fetch` when configured, optional custom resolver, and site-specific/generic extraction | Supported output varies by provider and page |
+| Direct media files | Direct HTTP download | Requires an accessible HTTPS file; playlists/DRM are not treated as ordinary files |
+| Home feed and search | FastSaver search with configured keys, otherwise InnerTube WEB search | Live service responses may be empty or unavailable |
 
-So the clone **does** reuse the genuine native engine (the `.so` files are bundled verbatim and
-driven through re-implemented JNI bridges), while extraction is done on-device because
-SnapTube's extraction is a remote service, not code in the APK.
+The custom **Resolver server** is optional and disabled by default. Set an HTTPS endpoint and, if that service requires it, its separate **Resolver token**. FastSaver keys and custom resolver bearer tokens are separate credentials; do not reuse them. Changing the resolver's HTTPS origin clears its saved token. Credentials entered in Settings use device-backed encrypted storage; APK asset files are extractable and are unsuitable for distributing secrets.
 
-### The reused engine — exact JNI surface
+The app does not include a guaranteed public resolver service or demo downloads. An unavailable source should produce an error/empty state rather than fabricated media. External provider behavior has not been validated by the host regression suite.
 
-The shipped `.so` files resolve native methods by class + method name, so the bridge classes
-must live in the original package with the original signatures. `src/com/snaptube/taskManager/`
-recreates them exactly:
+## Downloads and native engine
 
-| Library | Class | Native method (verified against the APK) |
-|---|---|---|
-| `libvideo_v1.so` | `com.snaptube.taskManager.CombinTask` | `int combvideo(String audio, String video, String output)` · callback `onProgress(int,int)` |
-| `libmp3cvt.so` | `com.snaptube.taskManager.M4a2Mp3Task` | `boolean convertM4aToMp3(long token, String m4a, String mp3, int bitrate)`, `void cancelConvert(long)` · callbacks `onConvertProgress(int)`, `onConvertComplete(int×6)` |
-| `libmp3cvt.so` | `com.snaptube.taskManager.M4ANativeLib` | `boolean isDashFormat(String)`, `long convertDASH2MPEG(String,String)` |
+The queue downloads streams through `HttpURLConnection`. A foreground download service supplies a notification while work is active, with pause/resume controls. Queue state and partial files support recovery; Android background restrictions, notification behavior, and process recovery still require device testing.
 
-Exported symbols confirmed with `readelf --dyn-syms` / `nm -D`, e.g.
-`Java_com_snaptube_taskManager_CombinTask_combvideo`.
+Adaptive video/audio pairs are muxed through `CombinTask.combvideo` in `libvideo_v1.so`; M4A-to-MP3 conversion and DASH M4A normalization use `libmp3cvt.so`. The JNI bridge classes retain the original `com.snaptube.taskManager` names and native signatures. Native libraries are bundled for ARM only. A library loading or conversion failure must not be interpreted as verified output; check the resulting media on a supported device.
 
-**No SnapTube Java/DEX code is copied** — only the two shared libraries are redistributed, and
-only the minimal bridge classes needed to call them.
+Settings includes Wi-Fi-only downloading and preferred video/audio/MP3 defaults. These changes are under integration and verification; device validation of network transitions, restored queues, and format selection remains upcoming. A preference is a requested default, and a resolver may not offer a matching format.
 
----
+The UI includes Home, Browse/search, media detail and download options, Downloads, My Files, video/music players, and Settings.
 
-## 2. How the engine is used end-to-end
+## Build
 
-`engine/DownloadManager` downloads streams with `HttpURLConnection`, then finalizes with the
-native engine (`engine/NativeStreams`):
-
-- **Adaptive video (separate video + audio tracks)** → download both → `CombinTask.combvideo`
-  muxes them into one MP4.
-- **MP3 audio** → download the M4A track → `M4a2Mp3Task.convertM4aToMp3` transcodes it.
-- **M4A audio** → `M4ANativeLib.convertDASHM4A` normalizes fragmented DASH to plain MPEG.
-
-If the native library cannot load on a device (see §5) the app degrades gracefully to a
-plain file copy instead of crashing.
-
-### Extraction (`engine/Resolvers`) — no bundled/demo content
-- **Share / Open with** — share any link from any app (YouTube, browser, TikTok, …) or tap a link
-  with SnapSave. `ShareActivity` grabs the URL and opens the download interface immediately, with
-  the quality/format sheet already up (SnapTube-style).
-- **YouTube** — resolved on-device via the InnerTube `player` API using the **ANDROID_VR**
-  client, the only client currently returning un-ciphered stream URLs (ANDROID/IOS/WEB are
-  `FAILED_PRECONDITION`/`UNPLAYABLE`/ciphered). Progressive tracks download directly; adaptive
-  video-only + audio-only tracks are paired and muxed by the native engine.
-- **Direct media URLs** (`.mp4/.m4a/.mp3/.webm/.m3u8/…`) pass straight through.
-- **Any other site** — the page is fetched and mined for media: `og:video`, `og:video:secure_url`,
-  `twitter:player:stream`, `<video>/<source src>` and raw `.mp4/.m3u8/.webm` links. Works for many
-  sites that embed a direct file; JS-only sites that keep the stream behind their own player are
-  reported as "no downloadable streams" rather than faking a result.
-
-### Platform support
-Resolution uses a backend chain (SnapTube-style: the heavy lifting is server-side):
-
-1. **FastSaver API** (`https://api.fastsaver.io`, header `X-Api-Key`) — primary. YouTube via
-   `/v1/youtube/info` + `/v1/youtube/download` + `/v1/youtube/search`; 8 other platforms via
-   `/v1/fetch`. Direct URLs are signed/expiring, so they are fetched **at download time**.
-2. **OFFLIN / generic resolver** (`https://off-l.in/download`) — fallback.
-3. **Built-in**: YouTube `ANDROID_VR` InnerTube player, generic `og:video` scrape, direct links.
-
-| Platform | Backend | Status |
-|---|---|---|
-| YouTube | FastSaver info/search/download | ✅ verified (info → signed URL → real MP4) |
-| Instagram / Facebook / TikTok / Twitter / LinkedIn (+3) | FastSaver `/v1/fetch` | ✅ API-supported |
-| YouTube (no key) | built-in ANDROID_VR | ✅ works without any backend |
-| Direct media (`.mp4/.m3u8/…`) | passed through | ✅ |
-
-**Search & home feed** use FastSaver `/v1/youtube/search` when a key is set (clean JSON), else the
-InnerTube WEB search.
-
-**API keys (rotation):** Settings → “API keys” accepts **several keys, one per line** (e.g. from
-different accounts). They are tried in order; when a key returns **401** (invalid), **429**
-(rate limit), **5xx** (overloaded) or a 400 mentioning credits/quota, it is put on cooldown and the
-**next key is used automatically**. The working key becomes sticky so requests aren’t wasted.
-A default key ships embedded so the app works on first run — **because it is compiled into the APK,
-treat it as public and rotate it if you distribute the app.** Free plan: 10 requests/min, ~1000
-credits/month.
-
-### Live catalogue (real data, no samples)
-- Home feed and search results come from the live YouTube search API (WEB client). YouTube's
-  `browse`/trending endpoint now requires request attestation, so the home feed is assembled from
-  live search over broad queries rather than a bundled list.
-- Offline / empty responses show an empty state with a Retry, never placeholder content.
-- "Up next" shows the user's own recent downloads (in the player) or the live feed (in detail).
-
----
-
-## 3. Screens (match the supplied mockups)
-
-Splash · Home (search, popular sites, trending) · Browse/results · Video detail ·
-Download-options bottom sheet · Downloads (stats, active + completed) · Video player ·
-Music player · My Files · Tools & Settings.
-
-Navigation is a 4-tab bar (Home / Browse / Downloads / My Files). Settings shows live native
-engine status ("Loaded" / "Unavailable").
-
----
-
-## 4. Build
-
-Requires JDK 17 and Android build-tools + a platform `android.jar`.
+Use Bash (Git Bash on Windows), JDK 17, an Android SDK with build-tools, and a platform `android.jar` for API 35 or newer. Shell utilities used by the script include `find`, `sort`, `unzip`, and `sha256sum`.
 
 ```bash
-# edit BT / AJAR at the top of build.sh if your SDK lives elsewhere
+cd /d/SnapSave
+export JAVA_HOME='/path/to/jdk-17'
+export ANDROID_HOME='/path/to/Android/Sdk'
 bash build.sh
-# -> SnapSave.apk
 ```
 
-Pipeline: `aapt2 compile` → `aapt2 link` (R.java) → `javac` → `d8` → package (libs + dex) →
-`zipalign` → `apksigner`.
+`JAVA_HOME` overrides JDK discovery. Without it, the script checks `PATH` and conventional JDK install locations. `ANDROID_HOME` or `ANDROID_SDK_ROOT` overrides SDK discovery; otherwise conventional SDK locations are checked. The highest available complete build-tools installation and highest installed numeric platform API at or above 35 are preferred. `BT` and `AJAR` remain available for explicit build-tools and platform-jar overrides. **Target API stays 35** even when compiling against a newer installed platform.
 
-Install on a device:
+For the toolchain prepared on this Windows machine:
+
 ```bash
+cd /d/SnapSave
+JAVA_HOME='/c/Users/SOURAV/.zcode/workspace/default/jdk17-extracted.zf8CI4/jdk-17.0.21+9' \
+ANDROID_HOME='/c/Users/SOURAV/AppData/Local/Android/Sdk' \
+bash build.sh
+```
+
+The extracted JDK is Eclipse Adoptium Temurin 17.0.21, obtained from the official Adoptium public binary API; the ZIP SHA-256 matched its release metadata. The installed SDK has build-tools 36.1.0 and platform 36. This machine-specific path is a local setup example, not a required repository layout.
+
+Pipeline: `aapt2 compile/link` → `javac` → `jar` → `d8` → stage assets/native libraries → package → `zipalign` → `apksigner` → signature, alignment, badging, and credential-entry checks. Version code/name come from `AndroidManifest.xml`. APK entries, including `resources.arsc` and native libraries, are stored uncompressed. Modern zipalign uses `-P 16` for native library payload alignment; this packaging check does not establish native runtime compatibility with 16 KiB page devices.
+
+### Signing and local API key policy
+
+Ordinary builds generate/reuse the throwaway local key at `build/snapsave.keystore`. That key is for local testing. Reusing it permits upgrades of earlier local builds signed by the same key.
+
+`assets/apikeys.txt` is ignored by Git and excluded from ordinary APKs. Prefer entering keys in Settings. For an explicit local test only:
+
+```bash
+SNAPSAVE_BUNDLE_LOCAL_KEYS=1 bash build.sh
+```
+
+This opt-in embeds extractable keys; do not distribute that APK. Release mode rejects the opt-in and local key assets. Signing key files are never package content. Release signing requires caller-provided material:
+
+```bash
+export SNAPSAVE_RELEASE=1
+export SNAPSAVE_KEYSTORE='/outside/project/release.jks'
+# Set SNAPSAVE_STOREPASS securely in your shell; optional SNAPSAVE_KEYPASS defaults to it.
+bash build.sh
+```
+
+Keep the release keystore outside the project and assets. Do not commit or publish keystores, passwords, API keys, or APKs containing local key assets.
+
+## Verification and installation
+
+The final portable build passed v1/v2/v3 signature verification, 16 KiB ZIP alignment, credential/signing-file packaging scans, and the private `dataSync` service manifest check. All **15 host regression cases passed**. The resulting version `1.9` (code `10`) APK is `2,652,379` bytes, with SHA-256 `1fed9d5654a8bfe44a49550b988414f638f5b66778b1e01ac83fcf714cf130d3`. See [docs/VERIFICATION.md](docs/VERIFICATION.md) for the test scope and pending device checks.
+
+```bash
+JAVA_HOME='/path/to/jdk-17' bash tests/run-host-tests.sh
+adb devices -l
 adb install -r SnapSave.apk
 ```
 
----
+No device runtime verification is recorded for this work. The available `Medium_Phone_API_36.1` emulator could not start because the Android Emulator hypervisor driver is not installed. Use a physical ARM Android device for native engine checks. An x86/x86_64 emulator does not verify the bundled ARM libraries.
 
-## 5. Install troubleshooting
+If installation fails, inspect the actual `adb install` error before changing the app. A differently signed existing package cannot be upgraded; uninstalling it deletes app data. Confirm the file hash, available storage, device API/ABI support, and permission to install from the selected source.
 
-The packaging keeps `resources.arsc` **uncompressed** and aligned (required on Android 11+),
-and signs with **v1 + v2 + v3** so it installs down to Android 5.0 (API 21). If a device still
-reports "App not installed":
+## Limitations
 
-1. **Uninstall any previous `com.snapsave.app`** first (different signing key can't upgrade).
-2. Enable "Install unknown apps" for the file manager / browser you install from.
-3. On an **x86/x86_64 emulator** (BlueStacks, WSA, AVD) installs fail because only arm64-v8a /
-   armeabi-v7a libraries exist — use a real ARM phone or an ARM system image.
-4. Confirm storage space and that the APK copied fully (`sha256` shown after each build).
-
----
-
-## 6. Known limitations
-
-- **Bundled ABIs are arm64-v8a and armeabi-v7a only** (as shipped by SnapTube). On an x86/x86_64
-  emulator the native libraries will not load and the app falls back to non-native finalization.
-- **Not runtime-tested here**: no Android device was attached to the build machine, so the APK was
-  verified statically (badging, signature, zipalign, dex class inventory, JNI symbol binding) but
-  not launched. Install it on a device to exercise the native path.
-- Extraction of protected/DRM or signature-ciphered streams is intentionally not attempted;
-  use it for content you are permitted to download.
-- Redistributing SnapTube's `.so` files carries the original vendor's licensing terms — this is
-  fine for personal/educational study, not for distribution.
+- Live provider resolution, foreground lifecycle behavior, native mux/conversion output, network policy, and recovery require device validation.
+- Protected/DRM or signature-ciphered streams are not guaranteed to resolve. Download only content you are authorized to use.
+- Bundled third-party native libraries retain their original licensing terms. Their presence in this repository does not establish redistribution rights; review those terms before distributing a build.

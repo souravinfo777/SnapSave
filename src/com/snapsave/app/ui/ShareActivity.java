@@ -30,6 +30,7 @@ public class ShareActivity extends Activity {
     private static volatile String handlingUrl;
     /** This instance's link — finish() only clears the guard when it is still ours. */
     private String myUrl;
+    private Thread resolverThread;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -50,16 +51,11 @@ public class ShareActivity extends Activity {
         setContentView(R.layout.activity_share);
         Insets.applyToContent(this);
 
-        new Thread(new Runnable() {
+        resolverThread = new Thread(new Runnable() {
             @Override
             public void run() {
-                ResolvedMedia resolved = null;
-                try {
-                    resolved = Resolvers.resolve(url);
-                } catch (Throwable ignored) {
-                    // never let a resolver failure strand the "Preparing download" card
-                }
-                final ResolvedMedia r = resolved;
+                final Resolvers.Outcome outcome = Resolvers.resolveDetailed(url);
+                final ResolvedMedia r = outcome.media;
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
@@ -68,7 +64,7 @@ public class ShareActivity extends Activity {
                         }
                         if (r == null || !r.hasAnything()) {
                             Toast.makeText(ShareActivity.this,
-                                    "Couldn't find a downloadable stream for this link.",
+                                    outcome.message,
                                     Toast.LENGTH_LONG).show();
                             finish();
                             return;
@@ -95,7 +91,14 @@ public class ShareActivity extends Activity {
                     }
                 });
             }
-        }, "share-resolve").start();
+        }, "share-resolve");
+        resolverThread.start();
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (resolverThread != null) resolverThread.interrupt();
+        super.onDestroy();
     }
 
     @Override

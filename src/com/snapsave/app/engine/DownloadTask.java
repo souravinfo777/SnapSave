@@ -9,7 +9,7 @@ import java.util.List;
 /** A single download job and its live progress. */
 public class DownloadTask {
 
-    public enum State { QUEUED, DOWNLOADING, MERGING, CONVERTING, COMPLETED, PAUSED, FAILED }
+    public enum State { QUEUED, DOWNLOADING, MERGING, CONVERTING, COMPLETED, PAUSED, FAILED, WAITING_NETWORK }
 
     /** One media part to fetch (a video-only or audio-only stream, or a single progressive file). */
     public static class Part {
@@ -35,6 +35,21 @@ public class DownloadTask {
     public String outName;
     public int mp3Bitrate = 128;
 
+    /** Output category is independent of the processing operation in kind. */
+    public String mediaType;
+    public String mimeType;
+    public String warning;
+    /** Original selection, retained so a signed media URL can be refreshed. */
+    public String sourcePage;
+    public String provider;
+    public String formatToken;
+    public String sourceMime;
+    public int formatItag;
+    public int formatHeight;
+    public int formatBitrate;
+    public boolean selectedAudioOnly;
+    public boolean selectedProgressive;
+
     public StreamOption option;
     public List<Part> parts = new ArrayList<Part>();
 
@@ -51,6 +66,9 @@ public class DownloadTask {
     public transient volatile boolean removed;
     /** True when this task was running at the last persist and should auto-resume on startup. */
     public transient boolean recoveredActive;
+    public transient volatile boolean workerScheduled;
+    public transient volatile boolean restartRequested;
+    public transient volatile boolean waitingForNetwork;
 
     public long total() {
         long t = 0;
@@ -80,6 +98,7 @@ public class DownloadTask {
 
     public boolean isActive() {
         return state == State.QUEUED || state == State.DOWNLOADING
-                || state == State.MERGING || state == State.CONVERTING;
+                || state == State.MERGING || state == State.CONVERTING
+                || state == State.WAITING_NETWORK;
     }
 }

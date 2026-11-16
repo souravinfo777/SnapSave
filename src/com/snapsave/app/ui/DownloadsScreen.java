@@ -17,9 +17,17 @@ import com.snapsave.app.App;
 import com.snapsave.app.R;
 import com.snapsave.app.engine.DownloadManager;
 import com.snapsave.app.engine.DownloadTask;
+import com.snapsave.app.engine.MediaTypes;
 import com.snapsave.app.util.Util;
 
+import java.text.DateFormat;
+import java.util.ArrayList;
+import java.util.Calendar;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.Date;
 import java.util.List;
+import java.util.Locale;
 
 public class DownloadsScreen extends Screen {
 
@@ -106,7 +114,8 @@ public class DownloadsScreen extends Screen {
     /** True when at least one task can still be paused (running or queued). */
     private boolean anyRunning() {
         for (DownloadTask t : dm.active()) {
-            if (t.isActive()) {
+            if (t.state == DownloadTask.State.DOWNLOADING || t.state == DownloadTask.State.QUEUED
+                    || t.state == DownloadTask.State.WAITING_NETWORK) {
                 return true;
             }
         }
@@ -130,7 +139,13 @@ public class DownloadsScreen extends Screen {
             return;
         }
         List<DownloadTask> active = dm.active();
-        List<DownloadTask> done = dm.completed();
+        List<DownloadTask> done = new ArrayList<DownloadTask>(dm.completed());
+        Collections.sort(done, new Comparator<DownloadTask>() {
+            @Override
+            public int compare(DownloadTask a, DownloadTask b) {
+                return Long.compare(b.completedAt, a.completedAt);
+            }
+        });
 
         pauseAll.setText(act.getString(anyRunning() ? R.string.pause_all : R.string.resume_all));
 
@@ -148,19 +163,30 @@ public class DownloadsScreen extends Screen {
             if (t.state == DownloadTask.State.DOWNLOADING) {
                 totalSpeed += t.speed;
                 activeNow++;
-            } else if (t.state == DownloadTask.State.QUEUED) {
+            } else if (t.state == DownloadTask.State.QUEUED
+                    || t.state == DownloadTask.State.WAITING_NETWORK) {
                 waiting++;
             }
             totalDone += t.done();
             totalAll += t.total();
         }
 
+        String previousDay = null;
         for (DownloadTask t : done) {
+            String day = completionDay(t.completedAt);
+            if (!day.equals(previousDay)) {
+                TextView header = new TextView(act);
+                header.setText(day);
+                header.setTextColor(act.getResources().getColor(R.color.text_primary));
+                header.setTextSize(18);
+                header.setTypeface(null, android.graphics.Typeface.BOLD);
+                header.setPadding(0, Util.dp(act, 16), 0, Util.dp(act, 8));
+                completedBox.addView(header);
+                previousDay = day;
+            }
             completedBox.addView(buildRow(completedBox, t));
         }
-        if (done.isEmpty()) {
-            completedHeader.setVisibility(View.GONE);
-        }
+        completedHeader.setText(done.isEmpty() ? "No completed downloads" : "Completed (" + done.size() + ")");
 
         String sp = Util.speed(totalSpeed);
         if (sp == null || sp.isEmpty()) {
@@ -215,8 +241,12 @@ public class DownloadsScreen extends Screen {
         switch (t.state) {
             case COMPLETED:
                 pb.setVisibility(View.GONE);
-                meta.setText(Util.bytes(t.outFile != null ? t.outFile.length() : 0) + " • Completed");
-                icon.setImageResource(R.drawable.ic_play);
+                String warning = completedWarning(t);
+                meta.setMaxLines(warning.isEmpty() ? 1 : 4);
+                meta.setText(Util.bytes(t.outFile != null ? t.outFile.length() : 0) + " • Completed"
+                        + (warning.isEmpty() ? "" : "\n" + warning));
+                icon.setImageResource(MediaTypes.isAudio(t) ? R.drawable.ic_music
+                        : MediaTypes.isVideo(t) ? R.drawable.ic_play : R.drawable.ic_folder);
                 action.setOnClickListener(new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
@@ -233,7 +263,10 @@ public class DownloadsScreen extends Screen {
             case PAUSED:
                 pb.setVisibility(View.VISIBLE);
                 pb.setProgress(t.percent());
-                meta.setText("Paused • " + t.percent() + "%");
+                boolean hasPauseReason = t.error != null && !t.error.trim().isEmpty();
+                meta.setMaxLines(hasPauseReason ? 4 : 1);
+                meta.setText("Paused • " + t.percent() + "%"
+                        + (hasPauseReason ? "\n" + friendly(t.error) : ""));
                 icon.setImageResource(R.drawable.ic_play);
                 row.setOnClickListener(new View.OnClickListener() {
                     @Override
@@ -250,7 +283,8 @@ public class DownloadsScreen extends Screen {
                 break;
             case FAILED:
                 pb.setVisibility(View.GONE);
-                meta.setText("Failed • " + friendly(t.error));
+                meta.setMaxLines(4);
+                meta.setText("Failed • " + friendly(t.error) + "\nTap to retry");
                 icon.setImageResource(R.drawable.ic_download);
                 row.setOnClickListener(new View.OnClickListener() {
                     @Override
@@ -294,7 +328,23 @@ public class DownloadsScreen extends Screen {
                     }
                 });
                 break;
-            default: // DOWNLOADING
+            case WAITING_NETWORK:
+                pb.setVisibility(View.VISIBLE);
+                pb.setIndeterminate(false);
+                pb.setProgress(t.percent());
+                meta.setMaxLines(5);
+                meta.setText("Waiting for network/Wi-Fi • open SnapSave to continue if needed\nTap to pause");
+                icon.setImageResource(R.drawable.ic_pause);
+                View.OnClickListener pauseWaiting = new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        dm.pause(t);
+                    }
+                };
+                row.setOnClickListener(pauseWaiting);
+                action.setOnClickListener(pauseWaiting);
+                break;
+            case DOWNLOADING:
                 pb.setVisibility(View.VISIBLE);
                 boolean known = t.total() > 0;
                 pb.setIndeterminate(!known);
@@ -325,22 +375,60 @@ public class DownloadsScreen extends Screen {
         return row;
     }
 
+    private String completionDay(long timestamp) {
+        if (timestamp <= 0) {
+            return "Completion date unknown";
+        }
+        Calendar completed = Calendar.getInstance();
+        completed.setTimeInMillis(timestamp);
+        Calendar today = Calendar.getInstance();
+        if (completed.get(Calendar.ERA) == today.get(Calendar.ERA)
+                && completed.get(Calendar.YEAR) == today.get(Calendar.YEAR)
+                && completed.get(Calendar.DAY_OF_YEAR) == today.get(Calendar.DAY_OF_YEAR)) {
+            return "Today";
+        }
+        today.add(Calendar.DAY_OF_YEAR, -1);
+        if (completed.get(Calendar.ERA) == today.get(Calendar.ERA)
+                && completed.get(Calendar.YEAR) == today.get(Calendar.YEAR)
+                && completed.get(Calendar.DAY_OF_YEAR) == today.get(Calendar.DAY_OF_YEAR)) {
+            return "Yesterday";
+        }
+        return DateFormat.getDateInstance(DateFormat.MEDIUM).format(new Date(timestamp));
+    }
+
+    private static String completedWarning(DownloadTask task) {
+        String warning = task.warning == null ? "" : task.warning.trim();
+        String legacy = task.error == null ? "" : task.error.trim();
+        String message = warning.isEmpty() ? "" : friendly(warning);
+        if (!legacy.isEmpty() && !legacy.equals(warning)) {
+            message += (message.isEmpty() ? "" : " • ") + friendly(legacy);
+        }
+        return message;
+    }
+
     private static String friendly(String e) {
         if (e == null || e.trim().isEmpty()) {
             return "tap to retry";
         }
-        String m = e.toLowerCase();
+        String m = e.toLowerCase(Locale.US);
+        if (m.contains("background_start_blocked")) {
+            return "Background start blocked — open SnapSave and tap to resume";
+        }
+        if (m.contains("video_only_no_audio")) {
+            return "Video saved without an audio track";
+        }
         if (m.contains("link_expired") || m.contains("expired")) {
             return "link expired — open the page again to retry";
         }
         if (m.contains("insecure")) {
             return "only https links are supported";
         }
-        if (m.contains("merge_failed")) {
-            return "audio merge failed — saved video only";
+        if (m.contains("merge_failed") || m.contains("mux_failed")) {
+            return "audio merge failed";
         }
-        if (m.contains("mp3_converter_unavailable") || m.contains("native_engine_unavailable")) {
-            return "converter unavailable — saved original format";
+        if (m.contains("mp3_converter_unavailable") || m.contains("native_engine_unavailable")
+                || m.contains("conversion_failed")) {
+            return "media processing unavailable or failed";
         }
         if (m.contains("416") || m.contains("range mismatch")) {
             return "server sent a bad range — tap to retry";
@@ -371,16 +459,24 @@ public class DownloadsScreen extends Screen {
                     android.widget.Toast.LENGTH_SHORT).show();
             return;
         }
-        Intent i;
-        if ("mp3".equals(t.kind) || "m4a".equals(t.kind)) {
-            i = new Intent(act, MusicPlayerActivity.class);
-        } else {
-            i = new Intent(act, PlayerActivity.class);
+        if (MediaTypes.isImage(t)) {
+            android.widget.Toast.makeText(act, "Image opening is not supported here yet.",
+                    android.widget.Toast.LENGTH_SHORT).show();
+            return;
         }
+        if (!MediaTypes.isAudio(t) && !MediaTypes.isVideo(t)) {
+            android.widget.Toast.makeText(act, "This file type cannot be opened here.",
+                    android.widget.Toast.LENGTH_SHORT).show();
+            return;
+        }
+        Intent i = new Intent(act, MediaTypes.isAudio(t)
+                ? MusicPlayerActivity.class : PlayerActivity.class);
         i.putExtra("path", t.outFile.getAbsolutePath());
         i.putExtra("title", t.title);
         i.putExtra("author", t.author);
         i.putExtra("grad", t.grad);
+        i.putExtra("mimeType", t.mimeType);
+        i.putExtra("mediaType", MediaTypes.mediaType(t));
         act.startActivity(i);
     }
 }

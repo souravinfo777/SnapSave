@@ -23,6 +23,7 @@ import com.snapsave.app.engine.Resolvers;
 import com.snapsave.app.model.StreamOption;
 import com.snapsave.app.util.ImageLoader;
 import com.snapsave.app.util.Util;
+import com.snapsave.app.util.Prefs;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -116,24 +117,33 @@ public class DownloadSheet extends Dialog {
             labelVideo(videos.get(i), i);
         }
 
-        // An MP3 built from the best audio track is always offered.
-        long mp3Size = audioEstimate(r.duration, 320);
-        if (r.bestAudio != null && usable(r.bestAudio)) {
-            StreamOption mp3 = new StreamOption("MP3 • 320 kbps", "Music quality", mp3Size, 0, true);
+        int preferredBitrate = Prefs.mp3Bitrate();
+        long mp3Size = audioEstimate(r.duration, preferredBitrate);
+        if (NativeStreams.canMp3() && r.bestAudio != null && r.bestAudio.url != null) {
+            StreamOption mp3 = new StreamOption("MP3 • " + preferredBitrate + " kbps", "Convert audio", mp3Size, 0, true);
             mp3.url = r.bestAudio.url;
             mp3.mimeType = "audio/mpeg";
-            mp3.bitrate = 320;
+            mp3.bitrate = preferredBitrate;
+            mp3.itag = r.bestAudio.itag;
+            mp3.sourceMimeType = r.bestAudio.mimeType;
+            mp3.sourceBitrate = r.bestAudio.bitrate;
             audios.add(0, mp3);
         }
 
         // No audio track anywhere? Offer an MP3 by pulling the sound out of the best video
         // locally with the SnapTube native engine.
-        if (!hasAudio(audios) && NativeStreams.available() && !videos.isEmpty()
-                && videos.get(0).url != null) {
-            StreamOption mp3 = new StreamOption("MP3 • 320 kbps", "Extract audio", mp3Size, 0, true);
-            mp3.url = videos.get(0).url;
+        if (!hasAudio(audios) && NativeStreams.canMp3() && !videos.isEmpty()
+                && videos.get(0).url != null && videos.get(0).progressive) {
+            StreamOption source = videos.get(0);
+            StreamOption mp3 = new StreamOption("MP3 • " + preferredBitrate + " kbps", "Extract audio", mp3Size, 0, true);
+            mp3.url = source.url;
             mp3.mimeType = "audio/mpeg";
-            mp3.bitrate = 320;
+            mp3.bitrate = preferredBitrate;
+            mp3.itag = source.itag;
+            mp3.sourceMimeType = source.mimeType;
+            mp3.sourceBitrate = source.bitrate;
+            mp3.height = source.height;
+            mp3.progressive = source.progressive;
             // The source is a video container: if the transcode fails, the fallback must keep the
             // real container extension instead of guessing from an audio extension list.
             mp3.sourceIsVideo = true;
@@ -150,25 +160,7 @@ public class DownloadSheet extends Dialog {
         findViewById(R.id.audio_section_title)
                 .setVisibility(audioBox.getChildCount() == 0 ? View.GONE : View.VISIBLE);
 
-        int def = 0;
-        if (audioFirst) {
-            for (int i = 0; i < options.size(); i++) {
-                if (options.get(i).audioOnly) {
-                    def = i;
-                    break;
-                }
-            }
-        } else {
-            // Default to the best quality up to 1080p: a 2K/4K file is a poor default on mobile.
-            for (int i = 0; i < options.size(); i++) {
-                StreamOption o = options.get(i);
-                if (!o.audioOnly && o.height > 0 && o.height <= 1080) {
-                    def = i;
-                    break;
-                }
-            }
-        }
-        select(def);
+        select(defaultSelection(audioFirst));
         probeMissingSizes();
 
         findViewById(R.id.sheet_close).setOnClickListener(new View.OnClickListener() {
@@ -183,6 +175,31 @@ public class DownloadSheet extends Dialog {
                 startDownload();
             }
         });
+    }
+
+    private int defaultSelection(boolean audioFirst) {
+        int fallback = 0;
+        if (audioFirst) {
+            boolean found = false;
+            String preferred = Prefs.audioFormat();
+            for (int i = 0; i < options.size(); i++) {
+                StreamOption option = options.get(i);
+                if (!option.audioOnly) continue;
+                if (!found) { fallback = i; found = true; }
+                if (("mp3".equals(preferred) && ".mp3".equals(audioExt(option)))
+                        || ("m4a".equals(preferred) && ".m4a".equals(audioExt(option)))) return i;
+            }
+            return fallback;
+        }
+        int quality = Prefs.videoQuality();
+        int smallest = -1;
+        for (int i = 0; i < options.size(); i++) {
+            StreamOption option = options.get(i);
+            if (option.audioOnly) continue;
+            if (smallest < 0 || option.height < options.get(smallest).height) smallest = i;
+            if (quality == 0 || (option.height > 0 && option.height <= quality)) return i;
+        }
+        return smallest < 0 ? fallback : smallest;
     }
 
     public void setOnDismiss(OnDismiss l) {
@@ -367,6 +384,17 @@ public class DownloadSheet extends Dialog {
         t.option = o;
         t.label = o.label;
         t.sourceIsVideo = o.sourceIsVideo;
+        t.sourcePage = media.pageUrl;
+        t.provider = media.serverName;
+        t.formatToken = o.serverFormat;
+        t.formatItag = o.itag;
+        t.formatHeight = o.height;
+        t.formatBitrate = o.sourceMimeType != null ? o.sourceBitrate : o.bitrate;
+        t.sourceMime = o.sourceMimeType != null ? o.sourceMimeType : o.mimeType;
+        t.selectedAudioOnly = o.audioOnly;
+        t.selectedProgressive = o.progressive;
+        t.mimeType = o.mimeType;
+        t.mediaType = o.audioOnly ? "audio" : (o.mimeType != null && o.mimeType.startsWith("image/") ? "image" : "video");
 
         DownloadTask.Part part = new DownloadTask.Part();
         part.url = o.url;
@@ -516,7 +544,7 @@ public class DownloadSheet extends Dialog {
         if (u.contains(".flac") || m.contains("flac")) return ".flac";
         if (u.contains(".wav") || m.contains("wav")) return ".wav";
         if (u.contains(".ogg") || m.contains("ogg")) return ".ogg";
-        if (u.contains(".webm")) return ".webm";
+        if (u.contains(".webm") || m.contains("webm")) return ".webm";
         return ".m4a";
     }
 

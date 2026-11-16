@@ -35,6 +35,7 @@ public final class ServerResolver {
             JSONObject j = new JSONObject(resp);
             String status = j.optString("status", "");
             if ("error".equalsIgnoreCase(status) || "failed".equalsIgnoreCase(status) || j.has("error")) {
+                Http.noteFailureText(j.optString("error", "") + " " + j.optString("message", ""));
                 return null;
             }
 
@@ -109,6 +110,7 @@ public final class ServerResolver {
             r.progressive = r.bestAudio == null;
             return n > 0 ? r : null;
         } catch (Throwable t) {
+            Http.noteFailure(t);
             return null;
         }
     }
