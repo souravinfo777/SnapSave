@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="match_parent"
+    android:orientation="vertical" android:background="@color/ink"
+    android:paddingStart="20dp" android:paddingEnd="20dp">
+
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="horizontal" android:gravity="center_vertical"
+        android:paddingTop="12dp">
+        <FrameLayout android:id="@+id/btn_back" android:layout_width="44dp" android:layout_height="44dp"
+            android:background="@drawable/bg_icon_circle" android:clickable="true" android:focusable="true">
+            <ImageView android:layout_width="20dp" android:layout_height="20dp"
+                android:layout_gravity="center" android:src="@drawable/ic_back"
+                android:tint="@color/text_primary" />
+        </FrameLayout>
+        <TextView android:layout_width="0dp" android:layout_height="wrap_content"
+            android:layout_weight="1" android:gravity="center" android:text="Now Playing"
+            android:textColor="@color/text_secondary" android:textSize="15sp" />
+        <FrameLayout android:layout_width="44dp" android:layout_height="44dp"
+            android:background="@drawable/bg_icon_circle">
+            <ImageView android:layout_width="20dp" android:layout_height="20dp"
+                android:layout_gravity="center" android:src="@drawable/ic_more"
+                android:tint="@color/text_primary" />
+        </FrameLayout>
+    </LinearLayout>
+
+    <Space android:layout_width="1dp" android:layout_height="0dp" android:layout_weight="0.4" />
+
+    <FrameLayout android:id="@+id/m_art" android:layout_width="match_parent" android:layout_height="0dp"
+        android:layout_weight="2.2" android:background="@drawable/grad_purple">
+        <ImageView android:layout_width="80dp" android:layout_height="80dp"
+            android:layout_gravity="center" android:src="@drawable/ic_music"
+            android:tint="#CCFFFFFF" />
+    </FrameLayout>
+
+    <TextView android:id="@+id/m_title" android:layout_width="match_parent"
+        android:layout_height="wrap_content" android:layout_marginTop="24dp"
+        android:ellipsize="end" android:maxLines="1" android:textColor="@color/text_primary"
+        android:textSize="22sp" android:textStyle="bold" />
+    <TextView android:id="@+id/m_artist" android:layout_width="match_parent"
+        android:layout_height="wrap_content" android:layout_marginTop="6dp"
+        android:textColor="@color/text_secondary" android:textSize="15sp" />
+
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginTop="18dp">
+        <TextView android:id="@+id/m_cur" android:layout_width="wrap_content"
+            android:layout_height="wrap_content" android:text="00:00" android:textColor="@color/text_secondary"
+            android:textSize="12sp" />
+        <SeekBar android:id="@+id/m_seek" android:layout_width="0dp" android:layout_height="wrap_content"
+            android:layout_weight="1" android:layout_marginStart="10dp" android:layout_marginEnd="10dp"
+            android:max="100" android:progress="0" android:progressTint="@color/primary"
+            android:thumbTint="@color/primary" />
+        <TextView android:id="@+id/m_total" android:layout_width="wrap_content"
+            android:layout_height="wrap_content" android:text="04:12" android:textColor="@color/text_secondary"
+            android:textSize="12sp" />
+    </LinearLayout>
+
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="horizontal" android:gravity="center"
+        android:layout_marginTop="14dp" android:layout_marginBottom="18dp">
+        <ImageView android:layout_width="30dp" android:layout_height="30dp"
+            android:layout_marginEnd="34dp" android:src="@drawable/ic_list"
+            android:tint="@color/text_secondary" />
+        <FrameLayout android:layout_width="56dp" android:layout_height="56dp"
+            android:background="@drawable/bg_icon_circle">
+            <ImageView android:layout_width="26dp" android:layout_height="26dp"
+                android:layout_gravity="center" android:src="@drawable/ic_back"
+                android:tint="@color/text_primary" />
+        </FrameLayout>
+        <FrameLayout android:id="@+id/m_play" android:layout_width="72dp" android:layout_height="72dp"
+            android:layout_marginStart="18dp" android:layout_marginEnd="18dp"
+            android:background="@drawable/bg_btn_primary" android:clickable="true" android:focusable="true">
+            <ImageView android:id="@+id/m_play_icon" android:layout_width="32dp" android:layout_height="32dp"
+                android:layout_gravity="center" android:src="@drawable/ic_play"
+                android:tint="@color/on_primary" />
+        </FrameLayout>
+        <FrameLayout android:layout_width="56dp" android:layout_height="56dp"
+            android:background="@drawable/bg_icon_circle">
+            <ImageView android:layout_width="26dp" android:layout_height="26dp"
+            android:layout_gravity="center" android:rotation="180" android:src="@drawable/ic_back"
+            android:tint="@color/text_primary" />
+        </FrameLayout>
+        <ImageView android:layout_width="30dp" android:layout_height="30dp"
+            android:layout_marginStart="34dp" android:src="@drawable/ic_heart"
+            android:tint="@color/text_secondary" />
+    </LinearLayout>
+</LinearLayout>

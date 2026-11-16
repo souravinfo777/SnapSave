@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="match_parent"
+    android:orientation="vertical" android:background="@color/ink">
+
+    <!-- Top bar -->
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="horizontal" android:gravity="center_vertical"
+        android:paddingStart="12dp" android:paddingEnd="12dp" android:paddingTop="12dp">
+        <FrameLayout android:id="@+id/btn_back" android:layout_width="44dp" android:layout_height="44dp"
+            android:background="@drawable/bg_icon_circle" android:clickable="true" android:focusable="true">
+            <ImageView android:layout_width="20dp" android:layout_height="20dp"
+                android:layout_gravity="center" android:src="@drawable/ic_back"
+                android:tint="@color/text_primary" />
+        </FrameLayout>
+        <TextView android:id="@+id/player_title" android:layout_width="0dp"
+            android:layout_height="wrap_content" android:layout_weight="1" android:gravity="center"
+            android:ellipsize="end" android:maxLines="1" android:textColor="@color/text_primary"
+            android:textSize="18sp" android:textStyle="bold" />
+        <FrameLayout android:layout_width="44dp" android:layout_height="44dp"
+            android:background="@drawable/bg_icon_circle">
+            <ImageView android:layout_width="20dp" android:layout_height="20dp"
+                android:layout_gravity="center" android:src="@drawable/ic_more"
+                android:tint="@color/text_primary" />
+        </FrameLayout>
+    </LinearLayout>
+
+    <!-- Surface -->
+    <FrameLayout android:layout_width="match_parent" android:layout_height="220dp"
+        android:layout_marginTop="8dp" android:background="@drawable/grad_purple">
+        <VideoView android:id="@+id/video_view" android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+        <FrameLayout android:id="@+id/play_pause" android:layout_width="66dp"
+            android:layout_height="66dp" android:layout_gravity="center"
+            android:background="@drawable/bg_play_scrim" android:clickable="true" android:focusable="true">
+            <ImageView android:id="@+id/play_pause_icon" android:layout_width="30dp"
+                android:layout_height="30dp" android:layout_gravity="center"
+                android:src="@drawable/ic_pause" android:tint="@color/white" />
+        </FrameLayout>
+        <FrameLayout android:layout_width="44dp" android:layout_height="44dp"
+            android:layout_gravity="bottom|end" android:layout_margin="10dp">
+            <ImageView android:layout_width="24dp" android:layout_height="24dp"
+                android:layout_gravity="center" android:src="@drawable/ic_fullscreen"
+                android:tint="@color/white" />
+        </FrameLayout>
+    </FrameLayout>
+
+    <!-- Seek -->
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="horizontal" android:gravity="center_vertical"
+        android:paddingStart="16dp" android:paddingEnd="16dp" android:paddingTop="6dp">
+        <TextView android:id="@+id/cur_time" android:layout_width="wrap_content"
+            android:layout_height="wrap_content" android:text="01:47" android:textColor="@color/white"
+            android:textSize="13sp" />
+        <SeekBar android:id="@+id/seek" android:layout_width="0dp" android:layout_height="wrap_content"
+            android:layout_weight="1" android:layout_marginStart="10dp" android:layout_marginEnd="10dp"
+            android:max="100" android:progress="42" android:progressTint="@color/primary"
+            android:thumbTint="@color/primary" />
+        <TextView android:id="@+id/total_time" android:layout_width="wrap_content"
+            android:layout_height="wrap_content" android:text="04:12" android:textColor="@color/white"
+            android:textSize="13sp" />
+    </LinearLayout>
+
+    <ScrollView android:layout_width="match_parent" android:layout_height="0dp"
+        android:layout_weight="1" android:scrollbars="none" android:paddingStart="16dp"
+        android:paddingEnd="16dp">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical" android:paddingBottom="16dp">
+
+            <TextView android:id="@+id/p_title" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:layout_marginTop="14dp"
+                android:textColor="@color/text_primary" android:textSize="20sp"
+                android:textStyle="bold" />
+            <TextView android:id="@+id/p_meta" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:layout_marginTop="6dp"
+                android:textColor="@color/text_secondary" android:textSize="13sp" />
+
+            <LinearLayout android:id="@+id/action_row" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:layout_marginTop="18dp"
+                android:orientation="horizontal" />
+
+            <HorizontalScrollView android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="16dp" android:scrollbars="none">
+                <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:orientation="horizontal">
+                    <TextView style="@style/ChipOn" android:text="Quality • 720p" />
+                    <TextView style="@style/Chip" android:text="Speed • 1.0x" />
+                    <TextView style="@style/Chip" android:text="Subtitles • Off" />
+                </LinearLayout>
+            </HorizontalScrollView>
+
+            <RelativeLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="20dp">
+                <TextView android:id="@+id/upnext_title" style="@style/SectionTitle" android:layout_alignParentStart="true"
+                    android:text="@string/up_next" />
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:layout_alignParentEnd="true" android:layout_centerVertical="true"
+                    android:text="Autoplay ON" android:textColor="@color/primary"
+                    android:textSize="13sp" android:textStyle="bold" />
+            </RelativeLayout>
+
+            <LinearLayout android:id="@+id/upnext_container" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:layout_marginTop="6dp"
+                android:orientation="vertical" />
+        </LinearLayout>
+    </ScrollView>
+</LinearLayout>

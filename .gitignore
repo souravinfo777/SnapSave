@@ -1,0 +1,25 @@
+# build output
+/build/
+/out/
+*.class
+
+# packaged binaries (rebuilt by build.sh)
+*.apk
+*.idsig
+*.ap_
+*.dex
+
+# signing material — build.sh regenerates a throwaway key when absent
+*.keystore
+*.jks
+
+# local secrets (FastSaver API keys)
+/assets/apikeys.txt
+
+# editor / tooling
+.idea/
+*.iml
+.gradle/
+local.properties
+.DS_Store
+Thumbs.db

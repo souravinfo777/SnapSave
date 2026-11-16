@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="196dp"
+    android:layout_marginTop="6dp" android:layout_marginBottom="10dp"
+    android:background="@drawable/grad_purple" android:clickable="true" android:focusable="true">
+
+    <ImageView android:id="@+id/feat_bg" android:layout_width="match_parent"
+        android:layout_height="match_parent" android:scaleType="centerCrop"
+        android:background="@drawable/grad_purple" />
+
+    <TextView android:id="@+id/feat_badge" android:layout_width="wrap_content"
+        android:layout_height="wrap_content" android:layout_gravity="top|end"
+        android:layout_margin="12dp" android:background="@drawable/bg_duration"
+        android:paddingStart="8dp" android:paddingEnd="8dp" android:paddingTop="3dp"
+        android:paddingBottom="3dp" android:text="HD" android:textColor="@color/white"
+        android:textSize="12sp" android:textStyle="bold" />
+
+    <FrameLayout android:layout_width="62dp" android:layout_height="62dp"
+        android:layout_gravity="center" android:background="@drawable/bg_play_scrim">
+        <ImageView android:layout_width="30dp" android:layout_height="30dp"
+            android:layout_gravity="center" android:src="@drawable/ic_play"
+            android:tint="@color/primary" />
+    </FrameLayout>
+
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:layout_gravity="bottom" android:orientation="vertical" android:padding="16dp">
+        <TextView android:id="@+id/feat_title" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:ellipsize="end" android:maxLines="2"
+            android:textColor="@color/white" android:textSize="19sp" android:textStyle="bold" />
+        <TextView android:id="@+id/feat_meta" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:layout_marginTop="5dp"
+            android:textColor="#D9FFFFFF" android:textSize="13sp" />
+    </LinearLayout>
+
+    <FrameLayout android:id="@+id/feat_action" android:layout_width="46dp"
+        android:layout_height="46dp" android:layout_gravity="bottom|end" android:layout_margin="14dp"
+        android:background="@drawable/bg_badge" android:clickable="true" android:focusable="true">
+        <ImageView android:layout_width="24dp" android:layout_height="24dp"
+            android:layout_gravity="center" android:src="@drawable/ic_download"
+            android:tint="@color/on_primary" />
+    </FrameLayout>
+</FrameLayout>

@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">SnapSave</string>
+    <string name="brand_first">Snap</string>
+    <string name="brand_second">Save</string>
+    <string name="tagline">Video • Music • Fast Downloads</string>
+    <string name="version_line">Version 1.8 • Free</string>
+
+    <string name="search_hint">Search video, music…</string>
+    <string name="popular_sites">Popular sites</string>
+    <string name="all_sites">All sites</string>
+    <string name="trending_now">Popular now</string>
+    <string name="see_all">See all</string>
+
+    <string name="tab_home">Home</string>
+    <string name="tab_browse">Browse</string>
+    <string name="tab_downloads">Downloads</string>
+    <string name="tab_files">My Files</string>
+
+    <string name="download_video">Download Video</string>
+    <string name="download">Download</string>
+    <string name="up_next">Up next</string>
+    <string name="subscribe">Subscribe</string>
+
+    <string name="tab_downloading">Downloading</string>
+    <string name="tab_completed">Completed</string>
+    <string name="now_downloading">NOW DOWNLOADING</string>
+    <string name="completed_today">Completed today</string>
+    <string name="pause_all">Pause all</string>
+    <string name="resume_all">Resume all</string>
+    <string name="downloads_title">Downloads</string>
+
+    <string name="library_title">My Files</string>
+    <string name="settings_title">Tools &amp; Settings</string>
+
+    <string name="video_quality">Video</string>
+    <string name="audio_only">Audio only</string>
+    <string name="link_copied">Link copied — tap to download</string>
+    <string name="channel_downloads">Downloads</string>
+    <string name="channel_downloads_desc">Download progress and finished files</string>
+    <string name="download_complete">Download complete</string>
+    <string name="downloading">Downloading…</string>
+    <string name="queued_waiting">Queued • waiting for a free slot</string>
+</resources>

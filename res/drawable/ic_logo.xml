@@ -1,0 +1,11 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="96dp" android:height="96dp" android:viewportWidth="96" android:viewportHeight="96">
+    <!-- rounded green tile -->
+    <path android:fillColor="#FF12E26A"
+        android:pathData="M24,2 h48 a22,22 0 0 1 22,22 v48 a22,22 0 0 1 -22,22 h-48 a22,22 0 0 1 -22,-22 v-48 a22,22 0 0 1 22,-22 z" />
+    <!-- download arrow -->
+    <path android:fillColor="#FF06140C"
+        android:pathData="M42,20 h12 v24 h13 L48,64 29,44 h13 z" />
+    <path android:fillColor="#FF06140C"
+        android:pathData="M30,70 h36 v8 h-36 z" />
+</vector>

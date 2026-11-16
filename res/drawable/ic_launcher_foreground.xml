@@ -1,0 +1,8 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <!-- SnapSave mark: dark download-arrow, fits adaptive-icon safe zone (66x66 centered) -->
+    <group android:translateX="21" android:translateY="21" android:scaleX="0.6875" android:scaleY="0.6875">
+        <path android:fillColor="#FF06140C" android:pathData="M42,6 h12 v26 h14 L54,54 40,32 h12 z" />
+        <path android:fillColor="#FF06140C" android:pathData="M28,60 h40 v9 h-40 z" />
+    </group>
+</vector>

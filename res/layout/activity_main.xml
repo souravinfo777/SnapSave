@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@color/ink">
+
+    <FrameLayout
+        android:id="@+id/content"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1" />
+
+    <LinearLayout
+        android:id="@+id/bottom_nav"
+        android:layout_width="match_parent"
+        android:layout_height="62dp"
+        android:orientation="horizontal"
+        android:background="@color/ink_soft"
+        android:paddingTop="6dp">
+
+        <LinearLayout android:id="@+id/nav_home" style="@style/NavItem">
+            <FrameLayout android:layout_width="wrap_content" android:layout_height="wrap_content">
+                <ImageView android:id="@+id/nav_home_icon" style="@style/NavIcon" android:src="@drawable/ic_home" />
+            </FrameLayout>
+            <TextView android:id="@+id/nav_home_label" style="@style/NavLabel" android:text="@string/tab_home" />
+        </LinearLayout>
+
+        <LinearLayout android:id="@+id/nav_browse" style="@style/NavItem">
+            <FrameLayout android:layout_width="wrap_content" android:layout_height="wrap_content">
+                <ImageView android:id="@+id/nav_browse_icon" style="@style/NavIcon" android:src="@drawable/ic_globe" />
+            </FrameLayout>
+            <TextView android:id="@+id/nav_browse_label" style="@style/NavLabel" android:text="@string/tab_browse" />
+        </LinearLayout>
+
+        <LinearLayout android:id="@+id/nav_downloads" style="@style/NavItem">
+            <FrameLayout android:layout_width="wrap_content" android:layout_height="wrap_content">
+                <ImageView android:id="@+id/nav_downloads_icon" style="@style/NavIcon" android:src="@drawable/ic_download" />
+                <TextView android:id="@+id/nav_downloads_badge" style="@style/NavBadge" android:text="2" />
+            </FrameLayout>
+            <TextView android:id="@+id/nav_downloads_label" style="@style/NavLabel" android:text="@string/tab_downloads" />
+        </LinearLayout>
+
+        <LinearLayout android:id="@+id/nav_files" style="@style/NavItem">
+            <FrameLayout android:layout_width="wrap_content" android:layout_height="wrap_content">
+                <ImageView android:id="@+id/nav_files_icon" style="@style/NavIcon" android:src="@drawable/ic_folder" />
+            </FrameLayout>
+            <TextView android:id="@+id/nav_files_label" style="@style/NavLabel" android:text="@string/tab_files" />
+        </LinearLayout>
+    </LinearLayout>
+</LinearLayout>

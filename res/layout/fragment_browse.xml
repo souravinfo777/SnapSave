@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@color/ink">
+
+    <!-- Search bar -->
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="horizontal" android:gravity="center_vertical"
+        android:paddingStart="12dp" android:paddingEnd="16dp" android:paddingTop="14dp">
+        <FrameLayout android:layout_width="44dp" android:layout_height="44dp"
+            android:background="@drawable/bg_icon_circle">
+            <ImageView android:layout_width="20dp" android:layout_height="20dp"
+                android:layout_gravity="center" android:src="@drawable/ic_back"
+                android:tint="@color/text_primary" />
+        </FrameLayout>
+        <LinearLayout android:layout_width="0dp" android:layout_height="48dp"
+            android:layout_weight="1" android:layout_marginStart="10dp"
+            android:background="@drawable/bg_search" android:gravity="center_vertical"
+            android:paddingStart="16dp" android:paddingEnd="12dp">
+            <ImageView android:layout_width="20dp" android:layout_height="20dp"
+                android:src="@drawable/ic_search" android:tint="@color/primary" />
+            <EditText android:id="@+id/search_input" android:layout_width="0dp"
+                android:layout_height="match_parent" android:layout_weight="1"
+                android:layout_marginStart="10dp" android:background="@null"
+                android:hint="@string/search_hint" android:imeOptions="actionSearch"
+                android:inputType="text" android:maxLines="1"
+                android:textColor="@color/text_primary" android:textColorHint="@color/text_tertiary"
+                android:textSize="16sp" />
+            <ImageView android:id="@+id/search_clear" android:layout_width="20dp"
+                android:layout_height="20dp" android:src="@drawable/ic_close"
+                android:tint="@color/primary" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- Tabs -->
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="horizontal" android:paddingStart="16dp" android:paddingEnd="16dp"
+        android:paddingTop="12dp">
+        <TextView android:id="@+id/tab_all" style="@style/BrowseTabOn" android:text="All" />
+        <TextView android:id="@+id/tab_videos" style="@style/BrowseTab" android:text="Videos" />
+        <TextView android:id="@+id/tab_music" style="@style/BrowseTab" android:text="Music" />
+        <TextView android:id="@+id/tab_playlists" style="@style/BrowseTab" android:text="Playlists" />
+    </LinearLayout>
+
+    <!-- Filter chips -->
+    <HorizontalScrollView android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:layout_marginTop="12dp" android:scrollbars="none"
+        android:paddingStart="16dp" android:paddingEnd="16dp">
+        <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:orientation="horizontal">
+            <TextView style="@style/ChipOn" android:text="Any duration" />
+            <TextView style="@style/Chip" android:text="HD quality" />
+            <TextView style="@style/Chip" android:text="This week" />
+            <TextView style="@style/Chip" android:text="Subtitles" />
+        </LinearLayout>
+    </HorizontalScrollView>
+
+    <TextView android:id="@+id/results_count" android:layout_width="match_parent"
+        android:layout_height="wrap_content" android:paddingStart="16dp" android:paddingEnd="16dp"
+        android:paddingTop="14dp" android:paddingBottom="4dp"
+        android:text="" android:textColor="@color/text_secondary"
+        android:textSize="13sp" />
+
+    <ScrollView android:layout_width="match_parent" android:layout_height="0dp"
+        android:layout_weight="1" android:scrollbars="none">
+        <LinearLayout android:id="@+id/results_container" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:orientation="vertical"
+            android:paddingStart="12dp" android:paddingEnd="12dp" android:paddingBottom="90dp" />
+    </ScrollView>
+
+    <!-- Link ready bar -->
+    <LinearLayout android:id="@+id/link_bar" android:layout_width="match_parent"
+        android:layout_height="54dp" android:layout_marginStart="14dp" android:layout_marginEnd="14dp"
+        android:layout_marginBottom="12dp" android:background="@drawable/bg_link_ready"
+        android:gravity="center_vertical" android:paddingStart="14dp" android:paddingEnd="14dp"
+        android:visibility="gone">
+        <ImageView android:layout_width="22dp" android:layout_height="22dp"
+            android:src="@drawable/ic_link" android:tint="@color/primary" />
+        <TextView android:layout_width="0dp" android:layout_height="wrap_content"
+            android:layout_weight="1" android:layout_marginStart="12dp"
+            android:text="@string/link_copied" android:textColor="@color/text_primary"
+            android:textSize="16sp" android:textStyle="bold" />
+        <ImageView android:layout_width="24dp" android:layout_height="24dp"
+            android:src="@drawable/ic_download" android:tint="@color/primary" />
+    </LinearLayout>
+</LinearLayout>
