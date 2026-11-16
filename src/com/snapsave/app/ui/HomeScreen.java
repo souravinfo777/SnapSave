@@ -138,6 +138,9 @@ public class HomeScreen extends Screen {
                     @Override
                     public void run() {
                         loadingTrending = false;
+                        if (act.isFinishing() || act.isDestroyed()) {
+                            return;   // the host activity is gone — never touch dead views
+                        }
                         renderTrending(items);
                     }
                 });

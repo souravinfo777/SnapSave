@@ -14,6 +14,8 @@ public class StreamOption {
     public boolean progressive; // true when this single file already contains audio+video
     /** Backend format token (e.g. "1080p"/"mp3") when the direct URL is obtained lazily. */
     public String serverFormat;
+    /** This "audio" row is really a video file whose sound is extracted locally. */
+    public boolean sourceIsVideo;
 
     public StreamOption() {
     }

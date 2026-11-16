@@ -41,7 +41,9 @@ public class M4ANativeLib {
         }
         try {
             if (!isDashFormat(in)) {
-                return true;
+                // Nothing to convert. Returning true here would report success without ever
+                // producing {@code out}; the caller must copy the source itself.
+                return false;
             }
             return convertDASH2MPEG(in, out) == 0;
         } catch (Throwable th) {

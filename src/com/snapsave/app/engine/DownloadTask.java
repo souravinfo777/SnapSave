@@ -29,6 +29,8 @@ public class DownloadTask {
 
     /** "video" | "mp3" | "m4a" */
     public String kind = "video";
+    /** The mp3 source is a video file (extract-audio row), so a failed transcode keeps ".mp4". */
+    public boolean sourceIsVideo;
     public String label = "1080p";
     public String outName;
     public int mp3Bitrate = 128;
@@ -44,6 +46,11 @@ public class DownloadTask {
 
     public File outFile;
     public transient Http.CancelToken cancelToken = new Http.CancelToken();
+
+    /** Set by {@link DownloadManager#remove}: the worker must stop and delete nothing else. */
+    public transient volatile boolean removed;
+    /** True when this task was running at the last persist and should auto-resume on startup. */
+    public transient boolean recoveredActive;
 
     public long total() {
         long t = 0;

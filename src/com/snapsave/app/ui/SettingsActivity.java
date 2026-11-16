@@ -3,6 +3,7 @@ package com.snapsave.app.ui;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.DialogInterface;
+import android.content.Intent;
 import android.os.Bundle;
 import android.text.InputType;
 import android.text.TextUtils;
@@ -76,8 +77,54 @@ public class SettingsActivity extends Activity {
             }
         });
 
+        View clip = add(R.drawable.ic_link, "Clipboard link",
+                "Open the download popup for a link you just copied",
+                Prefs.clipboardPrompt() ? "On" : "Off");
+        clip.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Prefs.setClipboardPrompt(!Prefs.clipboardPrompt());
+                build();
+            }
+        });
+
+        View notif = add(R.drawable.ic_download, "Notifications",
+                "Progress and completion alerts for downloads",
+                com.snapsave.app.engine.Notifier.enabled(this) ? "On" : "Off");
+        notif.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                openNotificationSettings();
+            }
+        });
+
         add(R.drawable.ic_person, "SnapSave account", "Sign in to sync", "Guest");
         add(R.drawable.ic_check, "About SnapSave", getString(R.string.version_line), "");
+    }
+
+    /**
+     * Android 13+ gates notifications behind a runtime permission; if it was denied the only way
+     * back is the system screen. Send the user there instead of silently dropping alerts.
+     */
+    private void openNotificationSettings() {
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 33
+                    && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                    != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 1002);
+                return;
+            }
+            Intent i = new Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS);
+            i.putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, getPackageName());
+            startActivity(i);
+        } catch (Exception e) {
+            try {
+                Intent i = new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        android.net.Uri.parse("package:" + getPackageName()));
+                startActivity(i);
+            } catch (Exception ignored) {
+            }
+        }
     }
 
     private static String host(String url) {

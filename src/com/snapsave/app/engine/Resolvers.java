@@ -60,7 +60,52 @@ public final class Resolvers {
     // ---------------------------------------------------------------- routing
 
     public static boolean isYouTube(String url) {
-        return url != null && videoId(url) != null;
+        if (url == null) {
+            return false;
+        }
+        String h = hostOrNull(url);
+        if (h == null) {
+            // Bare 11-character id (search results / detail screens).
+            return url.matches("[A-Za-z0-9_-]{11}");
+        }
+        String host = h.toLowerCase();
+        boolean youtubeHost = host.equals("youtube.com") || host.endsWith(".youtube.com")
+                || host.equals("youtu.be") || host.endsWith(".youtu.be")
+                || host.equals("youtube-nocookie.com") || host.endsWith(".youtube-nocookie.com");
+        return youtubeHost && videoId(url) != null;
+    }
+
+    /**
+     * True when the link points at a platform with a built-in extractor (or is a direct media
+     * file). Used to ignore unrelated clipboard URLs instead of firing a resolver request.
+     */
+    public static boolean isSupportedLink(String url) {
+        if (url == null) {
+            return false;
+        }
+        if (looksDirect(url) || isYouTube(url)) {
+            return true;
+        }
+        String h = hostOrNull(url);
+        if (h == null) {
+            return false;
+        }
+        String host = h.toLowerCase();
+        return host.contains("facebook") || host.contains("fb.watch")
+                || host.contains("instagram") || host.contains("tiktok")
+                || host.contains("twitter") || host.contains("x.com")
+                || host.contains("youtube") || host.contains("youtu.be")
+                || host.contains("vimeo") || host.contains("dailymotion")
+                || host.contains("twitch") || host.contains("pinterest");
+    }
+
+    /** Host of a URL, or null when it is not a parseable absolute URL. */
+    private static String hostOrNull(String url) {
+        try {
+            return new java.net.URL(url).getHost();
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     public static String videoId(String url) {
@@ -74,9 +119,14 @@ public final class Resolvers {
         return url.matches("[A-Za-z0-9_-]{11}") ? url : null;
     }
 
+    /**
+     * True for URLs that are a single downloadable media file. HLS playlists (.m3u8) and
+     * segments (.ts) are deliberately excluded: saving a playlist as ".mp4" produces a file no
+     * player can open, and segment fetching is not implemented.
+     */
     public static boolean looksDirect(String url) {
         return url != null && url.toLowerCase()
-                .matches(".*\\.(mp4|m4a|mp3|webm|mkv|mov|3gp|aac|opus|flac|wav|m3u8|ts)(\\?.*)?$");
+                .matches(".*\\.(mp4|m4a|mp3|webm|mkv|mov|3gp|aac|opus|flac|wav)(\\?.*)?$");
     }
 
     public static String firstUrl(String text) {
@@ -92,11 +142,17 @@ public final class Resolvers {
             return null;
         }
         url = url.trim();
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+            return null;
+        }
+        if (url.startsWith("http://")) {
+            // Cleartext is denied by the manifest and network security config, so an http://
+            // request fails before a byte is sent. Nearly every site serves the same page over
+            // TLS, so upgrade instead of failing with an opaque platform error.
+            url = "https://" + url.substring(7);
+        }
         if (looksDirect(url)) {
             return resolveDirect(url);
-        }
-        if (!url.startsWith("http")) {
-            return null;
         }
 
         String h = host(url).toLowerCase();
@@ -130,9 +186,13 @@ public final class Resolvers {
         if (FastSaver.keyCount() > 0 && within(start, 15000)) {
             ResolvedMedia fs = FastSaver.fetch(url);
             if (fs != null && fs.hasAnything()) {
-                return finish(fs, url);          // FastSaver is the primary resolver
+                if (rich(fs)) {
+                    return finish(fs, url);      // video + audio: nothing better is coming
+                }
+                // Video-only: keep looking. A later candidate with a separate audio track
+                // lets the sheet offer a real MP3 instead of a silent mux.
+                result = prefer(result, fs);
             }
-            result = prefer(result, fs);
         }
 
         String server = com.snapsave.app.util.Prefs.resolver();
@@ -155,7 +215,9 @@ public final class Resolvers {
         if (result != null && result.hasAnything()) {
             return finish(result, url);
         }
-        return resolveDirect(url);
+        // Nothing usable was found. Never fall back to the *page* URL as a "direct" media file:
+        // that produced an HTML document named ".mp4" that no player could open.
+        return null;
     }
 
     private static boolean within(long start, long budgetMs) {
@@ -190,10 +252,12 @@ public final class Resolvers {
         r.title = current == null ? "" : current;
         // Re-fetch the page when the backend gave us nothing usable: no title, a raw URL, a
         // file name, or the literal "null" that org.json returns for {"title": null}.
-        boolean needTitle = current == null || "untitled".equalsIgnoreCase(current)
+        final boolean needTitle = current == null || "untitled".equalsIgnoreCase(current)
                 || current.startsWith("http") || current.toLowerCase().endsWith(".mp4");
-        if (!needTitle) {
-            return;   // metadata is already good — don't spend seconds re-fetching the page
+        final boolean needThumb = r.thumbUrl == null || r.thumbUrl.isEmpty();
+        final boolean needAuthor = r.author == null || r.author.isEmpty();
+        if (!needTitle && !needThumb && !needAuthor) {
+            return;   // metadata is already complete — don't spend seconds re-fetching the page
         }
         try {
             if (isYouTube(url)) {
@@ -201,19 +265,17 @@ public final class Resolvers {
                         + URLEncoder.encode(url, "UTF-8"), null, Http.UA);
                 JSONObject o = new JSONObject(oe);
                 if (needTitle && o.has("title")) r.title = o.getString("title");
-                if (o.has("author_name") && (r.author == null || r.author.isEmpty())) r.author = o.getString("author_name");
-                if (o.has("thumbnail_url") && (r.thumbUrl == null || r.thumbUrl.isEmpty())) r.thumbUrl = o.getString("thumbnail_url");
+                if (needAuthor && o.has("author_name")) r.author = o.getString("author_name");
+                if (needThumb && o.has("thumbnail_url")) r.thumbUrl = o.getString("thumbnail_url");
             } else {
                 String html = Http.get(url, null, MOBILE_UA);
-                if (needTitle) {
-                    String t = nonEmpty(meta(html, "og:title"), tagTitle(html));
-                    if (t != null) r.title = t;
-                }
-                if (r.thumbUrl == null || r.thumbUrl.isEmpty()) {
-                    r.thumbUrl = meta(html, "og:image");
-                }
-                if (r.author == null || r.author.isEmpty()) {
-                    r.author = meta(html, "og:site_name");
+                if (html != null && !html.isEmpty()) {
+                    if (needTitle) {
+                        String t = nonEmpty(meta(html, "og:title"), tagTitle(html));
+                        if (t != null) r.title = t;
+                    }
+                    if (needThumb) r.thumbUrl = meta(html, "og:image");
+                    if (needAuthor) r.author = meta(html, "og:site_name");
                 }
             }
         } catch (Throwable ignored) {
@@ -245,7 +307,7 @@ public final class Resolvers {
         r.directUrl = url;
         r.directMime = guessMime(url);
         String name = fileName(url);
-        r.title = name.isEmpty() ? "Media file" : name;
+        r.title = name.isEmpty() ? "Media file" : bareName(name);
         r.grad = Math.abs(url.hashCode()) % 4;
         StreamOption opt = new StreamOption("Original", "Direct link • " + host(url), 0, 0,
                 r.directMime.startsWith("audio"));
@@ -382,9 +444,14 @@ public final class Resolvers {
             return;
         }
         String s = u.toLowerCase();
-        if (s.startsWith("http") && (s.contains(".mp4") || s.contains(".m3u8") || s.contains(".webm")
+        if (s.contains(".m3u8")) {
+            return;                       // HLS playlist — not a single downloadable file
+        }
+        if (s.startsWith("http") && (s.contains(".mp4") || s.contains(".webm")
                 || s.contains(".m4a") || s.contains(".mp3") || s.contains("videoplayback") || s.contains("video"))) {
-            out.add(u);
+            if (!out.contains(u)) {
+                out.add(u);
+            }
         }
     }
 
@@ -472,6 +539,15 @@ public final class Resolvers {
         }
     }
 
+    /** File name without its extension — used as a display title for direct links. */
+    private static String bareName(String name) {
+        if (name == null) {
+            return "";
+        }
+        int dot = name.lastIndexOf('.');
+        return dot > 0 ? name.substring(0, dot) : name;
+    }
+
     private static String host(String url) {
         try {
             return new java.net.URL(url).getHost();
@@ -484,7 +560,16 @@ public final class Resolvers {
         String u = url.toLowerCase();
         if (u.contains(".mp3")) return "audio/mpeg";
         if (u.contains(".m4a") || u.contains(".aac")) return "audio/mp4";
+        if (u.contains(".opus")) return "audio/opus";
+        if (u.contains(".flac")) return "audio/flac";
+        if (u.contains(".wav")) return "audio/wav";
+        if (u.contains(".ogg") || u.contains(".oga")) return "audio/ogg";
         if (u.contains(".webm")) return "video/webm";
+        if (u.contains(".mkv")) return "video/x-matroska";
+        if (u.contains(".mov")) return "video/quicktime";
+        if (u.contains(".png")) return "image/png";
+        if (u.contains(".jpg") || u.contains(".jpeg")) return "image/jpeg";
+        if (u.contains(".webp")) return "image/webp";
         if (u.contains(".m3u8")) return "application/x-mpegURL";
         return "video/mp4";
     }
@@ -567,7 +652,12 @@ public final class Resolvers {
                     u = loc == null ? null : new java.net.URL(new java.net.URL(u), loc).toString();
                     continue;
                 }
-                long len = c.getContentLength();
+                long len;
+                try {
+                    len = c.getContentLengthLong();
+                } catch (Throwable legacy) {
+                    len = c.getContentLength();     // API < 24
+                }
                 c.disconnect();
                 return len > 0 ? len : -1;
             }

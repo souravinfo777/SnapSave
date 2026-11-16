@@ -11,6 +11,8 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * FastSaver API client (https://api.fastsaver.io) — one request returns clean JSON for
@@ -54,6 +56,12 @@ public final class FastSaver {
                         ? Http.getResp(url, key)
                         : Http.postResp(url, jsonBody, key);
                 if (r.code == 200) {
+                    if (quotaExhausted(r.body)) {
+                        // HTTP 200 with ok:false + a quota message: rest this key and try the next.
+                        KeyPool.cool(key, 3600_000L);
+                        lastBody = r.body;
+                        continue;
+                    }
                     com.snapsave.app.util.Prefs.setCurrentKeyIndex(idx);
                     return r.body;
                 }
@@ -116,18 +124,23 @@ public final class FastSaver {
 
             JSONArray formats = j.optJSONArray("formats");
             if (formats != null) {
+                boolean audioAdded = false;
                 for (int i = 0; i < formats.length(); i++) {
                     JSONObject f = formats.getJSONObject(i);
                     String type = f.optString("type", "");
                     String fmt = f.optString("format", "");
                     long size = f.optLong("filesize", 0);
                     if ("audio".equals(type)) {
-                        // The backend always returns an MP3 for its audio token, so expose one.
-                        StreamOption mp3 = new StreamOption("MP3 • 320 kbps", "Music quality", size, 0, true);
-                        mp3.mimeType = "audio/mpeg";
-                        mp3.serverFormat = "mp3";
-                        mp3.bitrate = 320;
-                        r.audioStreams.add(mp3);
+                        // The backend always returns an MP3 for its audio token, so expose exactly
+                        // one MP3 row no matter how many audio formats the payload lists.
+                        if (!audioAdded) {
+                            StreamOption mp3 = new StreamOption("MP3 • 320 kbps", "Music quality", size, 0, true);
+                            mp3.mimeType = "audio/mpeg";
+                            mp3.serverFormat = "mp3";
+                            mp3.bitrate = 320;
+                            r.audioStreams.add(mp3);
+                            audioAdded = true;
+                        }
                     } else {
                         int h = parseInt(fmt);
                         StreamOption o = new StreamOption();
@@ -200,8 +213,33 @@ public final class FastSaver {
             }
 
             // 1) Explicit single-result shapes (TikTok / Facebook). These links often carry no
-            //    file extension (e.g. …/aweme/v1/play/?…), which the generic scan below misses.
+            //    file extension (e.g. .../aweme/v1/play/?...), which the generic scan below misses.
             String direct = firstHttp(j, "download_url", "video_url", "hdplay", "play", "video", "url");
+            String audioUrl = firstHttp(j, "audio", "music", "audio_url", "sound");
+            if (audioUrl != null && audioUrl.equals(direct)) {
+                audioUrl = null;
+            }
+            // HLS playlists are not a single file: never promote one to the primary video row,
+            // or the "mp4" it is saved as is really a text playlist.
+            if (isHls(direct)) {
+                direct = null;
+            }
+            if (isHls(audioUrl)) {
+                audioUrl = null;
+            }
+
+            if (audioUrl != null) {
+                StreamOption a = new StreamOption();
+                a.url = audioUrl;
+                a.mimeType = audioUrl.toLowerCase().contains(".m4a") ? "audio/mp4" : "audio/mpeg";
+                a.label = "MP3 • Audio";
+                a.sub = "Server audio";
+                a.audioOnly = true;
+                a.bitrate = 128;
+                r.audioStreams.add(a);
+                r.bestAudio = a;
+            }
+
             if (direct != null) {
                 StreamOption o = new StreamOption();
                 o.url = direct;
@@ -226,7 +264,9 @@ public final class FastSaver {
                     }
                 }
                 o.sub = "Server • " + hostOf(direct);
-                o.progressive = true;
+                // A video-only stream is not progressive when a separate audio track exists —
+                // it has to be muxed, otherwise the saved file is silent.
+                o.progressive = (r.bestAudio == null);
                 if (o.mimeType.startsWith("audio")) {
                     o.audioOnly = true;
                     r.audioStreams.add(o);
@@ -235,38 +275,29 @@ public final class FastSaver {
                 }
             }
 
-            String audio = firstHttp(j, "audio", "music", "audio_url", "sound");
-            if (audio != null && !audio.equals(direct)) {
-                StreamOption o = new StreamOption();
-                o.url = audio;
-                o.mimeType = audio.toLowerCase().contains(".m4a") ? "audio/mp4" : "audio/mpeg";
-                o.label = "MP3 • Audio";
-                o.sub = "Server audio";
-                o.audioOnly = true;
-                o.bitrate = 128;
-                r.audioStreams.add(o);
-            }
-
             // 2) Any other media-looking URL anywhere in the JSON payload.
             List<String[]> found = new ArrayList<String[]>();
             collect(j, found, null);
             for (String[] f : found) {
                 String u = f[0];
-                if (u == null || u.equals(direct) || u.equals(audio)) {
+                if (u == null || u.equals(direct) || u.equals(audioUrl)) {
                     continue;
                 }
-                StreamOption o = new StreamOption();
+                if (u.toLowerCase().contains(".m3u8")) {
+                    continue;                     // HLS playlist — not a single downloadable file
+                }                StreamOption o = new StreamOption();
                 o.url = u;
                 o.mimeType = guess(u);
                 o.label = (f[1] == null || f[1].isEmpty()) ? "Original" : f[1];
                 o.sub = "Server • " + hostOf(u);
-                o.progressive = true;
+                o.progressive = (r.bestAudio == null);
                 if (o.mimeType.startsWith("audio")) {
                     o.audioOnly = true;
                     r.audioStreams.add(o);
                 } else if (o.mimeType.startsWith("image")) {
                     o.label = "Image";
                     o.sub = "Photo";
+                    o.progressive = true;
                     r.videoStreams.add(o);
                 } else {
                     r.videoStreams.add(o);
@@ -283,13 +314,37 @@ public final class FastSaver {
         return s == null ? "" : s;
     }
 
-    private static String firstHttp(JSONObject o, String... keys) {        for (String k : keys) {
+    /** An HTTP 200 body can still report a quota failure — that must rotate to the next key. */
+    private static boolean quotaExhausted(String body) {
+        if (body == null || !body.contains("\"ok\"")) {
+            return false;
+        }
+        String d = body.toLowerCase().replace(" ", "");
+        if (!d.contains("\"ok\":false")) {
+            return false;
+        }
+        return d.contains("credit") || d.contains("quota") || d.contains("exhaust")
+                || d.contains("limit") || d.contains("renew") || d.contains("subscription");
+    }
+
+    private static String firstHttp(JSONObject o, String... keys) {
+        for (String k : keys) {
             String v = o.optString(k, null);
             if (v != null && v.startsWith("http")) {
                 return v;
             }
         }
         return null;
+    }
+
+    /** True for an HLS playlist reference (by extension or the common manifest query). */
+    private static boolean isHls(String url) {
+        if (url == null) {
+            return false;
+        }
+        String u = url.toLowerCase();
+        return u.contains(".m3u8") || u.contains(".m3u?") || u.contains("manifest.m3u")
+                || u.contains("format=m3u8") || u.contains("type=m3u8");
     }
 
     private static String hostOf(String url) {
@@ -388,16 +443,34 @@ public final class FastSaver {
     private static String guess(String url) {
         String u = url.toLowerCase();
         if (u.contains(".mp3")) return "audio/mpeg";
-        if (u.contains(".m4a")) return "audio/mp4";
-        if (u.contains(".jpg") || u.contains(".jpeg") || u.contains(".png")) return "image/jpeg";
+        if (u.contains(".m4a") || u.contains(".aac")) return "audio/mp4";
+        if (u.contains(".opus")) return "audio/opus";
+        if (u.contains(".flac")) return "audio/flac";
+        if (u.contains(".wav")) return "audio/wav";
+        if (u.contains(".ogg") || u.contains(".oga")) return "audio/ogg";
+        if (u.contains(".jpg") || u.contains(".jpeg")) return "image/jpeg";
+        if (u.contains(".png")) return "image/png";
+        if (u.contains(".webp")) return "image/webp";
+        if (u.contains(".gif")) return "image/gif";
         if (u.contains(".webm")) return "video/webm";
+        if (u.contains(".mkv")) return "video/x-matroska";
+        if (u.contains(".mov")) return "video/quicktime";
         if (u.contains(".m3u8")) return "application/x-mpegURL";
         return "video/mp4";
     }
 
+    /** Height from a format label like "1080p", "720p60" or "2160" (never "108060"). */
     private static int parseInt(String s) {
+        if (s == null) {
+            return 0;
+        }
+        Matcher m = Pattern.compile("(\\d{3,4})").matcher(s);
+        if (!m.find()) {
+            return 0;
+        }
         try {
-            return Integer.parseInt(s.replaceAll("[^0-9]", ""));
+            int h = Integer.parseInt(m.group(1));
+            return (h >= 144 && h <= 4320) ? h : 0;
         } catch (Exception e) {
             return 0;
         }

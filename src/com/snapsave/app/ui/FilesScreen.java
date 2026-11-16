@@ -71,6 +71,14 @@ public class FilesScreen extends Screen {
         }
     };
 
+    private boolean destroyed = false;
+
+    @Override
+    public void destroy() {
+        destroyed = true;
+        dm.removeListener(listener);
+    }
+
     private void updateTabs() {
         int on = act.getResources().getColor(R.color.primary);
         int off = act.getResources().getColor(R.color.text_tertiary);
@@ -85,6 +93,9 @@ public class FilesScreen extends Screen {
     }
 
     private void refresh() {
+        if (destroyed) {
+            return;
+        }
         container.removeAllViews();
         List<DownloadTask> done = dm.completed();
         int shown = 0;
@@ -125,6 +136,8 @@ public class FilesScreen extends Screen {
 
     private void open(DownloadTask t) {
         if (t.outFile == null || !t.outFile.exists()) {
+            android.widget.Toast.makeText(act, "This file is no longer available.",
+                    android.widget.Toast.LENGTH_SHORT).show();
             return;
         }
         boolean audio = "mp3".equals(t.kind) || "m4a".equals(t.kind);

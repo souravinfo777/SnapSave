@@ -24,10 +24,52 @@ public final class Notifier {
     private Notifier() {
     }
 
-    /** Stable per-task notification id derived from the task id. */
+    /**
+     * Stable per-task notification id derived from the task id.
+     *
+     * A plain {@code hashCode() % 100000} clusters badly (short hex strings collide often) and
+     * two tasks sharing an id means one download's "complete" cancels the other's progress line.
+     * FNV-1a over the id bytes, folded into a wide reserved range, keeps the id stable across
+     * process restarts — required, because a resumed download must replace its own old line.
+     */
     public static int idFor(String taskId) {
-        int h = taskId == null ? 0 : taskId.hashCode();
-        return 1000 + ((h & 0x7fffffff) % 100000);
+        if (taskId == null || taskId.isEmpty()) {
+            return 100000;
+        }
+        final int FNV_OFFSET = 0x811c9dc5;
+        final int FNV_PRIME = 0x01000193;
+        int h = FNV_OFFSET;
+        for (int i = 0; i < taskId.length(); i++) {
+            h ^= taskId.charAt(i) & 0xff;
+            h *= FNV_PRIME;
+        }
+        // Second mixing pass: FNV alone maps similar ids (hex prefixes) to adjacent values.
+        h ^= h >>> 16;
+        h *= 0x7feb352d;
+        h ^= h >>> 15;
+        return 100000 + ((h & 0x7fffffff) % 900000);
+    }
+
+    /** True when the user can actually see notifications (permission / app setting). */
+    public static boolean enabled(Context c) {
+        try {
+            if (Build.VERSION.SDK_INT >= 24) {
+                NotificationManager m = nm(c);
+                if (m != null && !m.areNotificationsEnabled()) {
+                    return false;
+                }
+            }
+            if (Build.VERSION.SDK_INT >= 33) {
+                // PackageManager.checkPermission (API 1) rather than Context.checkSelfPermission
+                // (API 23): minSdk here is 21, and this must never trip the verifier.
+                return c.getPackageManager().checkPermission(
+                        android.Manifest.permission.POST_NOTIFICATIONS, c.getPackageName())
+                        == android.content.pm.PackageManager.PERMISSION_GRANTED;
+            }
+            return true;
+        } catch (Throwable ignored) {
+            return true;
+        }
     }
 
     public static void ensureChannel(Context c) {
@@ -47,7 +89,7 @@ public final class Notifier {
     public static void progress(Context c, int id, String title, int percent) {
         try {
             NotificationManager m = nm(c);
-            if (m == null) {
+            if (m == null || !enabled(c)) {
                 return;
             }
             boolean known = percent > 0;
@@ -68,7 +110,7 @@ public final class Notifier {
     public static void done(Context c, int id, String title, String path) {
         try {
             NotificationManager m = nm(c);
-            if (m == null) {
+            if (m == null || !enabled(c)) {
                 return;
             }
             String body = (title == null ? "Media" : title) + (path == null ? "" : "\n" + path);

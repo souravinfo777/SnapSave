@@ -73,12 +73,12 @@ public class DownloadsScreen extends Screen {
         pauseAll.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                if ("Pause all".contentEquals(pauseAll.getText())) {
+                // Derive the action from real task state, not from the button's own label:
+                // a translated label made the first tap call resumeAll by mistake.
+                if (anyRunning()) {
                     dm.pauseAll();
-                    pauseAll.setText("Resume all");
                 } else {
                     dm.resumeAll();
-                    pauseAll.setText("Pause all");
                 }
             }
         });
@@ -95,6 +95,24 @@ public class DownloadsScreen extends Screen {
         }
     };
 
+    private boolean destroyed = false;
+
+    @Override
+    public void destroy() {
+        destroyed = true;
+        dm.removeListener(listener);
+    }
+
+    /** True when at least one task can still be paused (running or queued). */
+    private boolean anyRunning() {
+        for (DownloadTask t : dm.active()) {
+            if (t.isActive()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private void updateTabs() {
         int on = act.getResources().getColor(R.color.primary);
         int off = act.getResources().getColor(R.color.text_tertiary);
@@ -108,8 +126,13 @@ public class DownloadsScreen extends Screen {
     }
 
     private void refresh() {
+        if (destroyed) {
+            return;
+        }
         List<DownloadTask> active = dm.active();
         List<DownloadTask> done = dm.completed();
+
+        pauseAll.setText(act.getString(anyRunning() ? R.string.pause_all : R.string.resume_all));
 
         tabDownloading.setText("Downloading (" + active.size() + ")");
 
@@ -137,8 +160,6 @@ public class DownloadsScreen extends Screen {
         }
         if (done.isEmpty()) {
             completedHeader.setVisibility(View.GONE);
-        } else {
-            completedHeader.setVisibility(showCompleted ? View.VISIBLE : View.VISIBLE);
         }
 
         String sp = Util.speed(totalSpeed);
@@ -214,6 +235,12 @@ public class DownloadsScreen extends Screen {
                 pb.setProgress(t.percent());
                 meta.setText("Paused • " + t.percent() + "%");
                 icon.setImageResource(R.drawable.ic_play);
+                row.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        dm.resume(t);
+                    }
+                });
                 action.setOnClickListener(new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
@@ -225,6 +252,12 @@ public class DownloadsScreen extends Screen {
                 pb.setVisibility(View.GONE);
                 meta.setText("Failed • " + friendly(t.error));
                 icon.setImageResource(R.drawable.ic_download);
+                row.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        dm.resume(t);
+                    }
+                });
                 action.setOnClickListener(new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
@@ -232,18 +265,28 @@ public class DownloadsScreen extends Screen {
                     }
                 });
                 break;
-case MERGING:
+            case MERGING:
             case CONVERTING:
+                // The native mux/transcode step has no pause: offering a pause button that does
+                // nothing is worse than saying what is happening.
                 pb.setVisibility(View.VISIBLE);
                 pb.setProgress(t.percent());
                 meta.setText("Processing with native engine...");
-                icon.setImageResource(R.drawable.ic_pause);
+                icon.setImageResource(R.drawable.ic_download);
+                row.setOnClickListener(null);
+                action.setOnClickListener(null);
                 break;
             case QUEUED:
                 pb.setVisibility(View.VISIBLE);
                 pb.setIndeterminate(true);
                 meta.setText(act.getString(R.string.queued_waiting));
                 icon.setImageResource(R.drawable.ic_close);
+                row.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        dm.remove(t);   // drop it from the queue
+                    }
+                });
                 action.setOnClickListener(new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
@@ -265,6 +308,12 @@ case MERGING:
                     meta.setText(sp + Util.bytes(t.done()));
                 }
                 icon.setImageResource(R.drawable.ic_pause);
+                row.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        dm.pause(t);
+                    }
+                });
                 action.setOnClickListener(new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
@@ -281,6 +330,24 @@ case MERGING:
             return "tap to retry";
         }
         String m = e.toLowerCase();
+        if (m.contains("link_expired") || m.contains("expired")) {
+            return "link expired — open the page again to retry";
+        }
+        if (m.contains("insecure")) {
+            return "only https links are supported";
+        }
+        if (m.contains("merge_failed")) {
+            return "audio merge failed — saved video only";
+        }
+        if (m.contains("mp3_converter_unavailable") || m.contains("native_engine_unavailable")) {
+            return "converter unavailable — saved original format";
+        }
+        if (m.contains("416") || m.contains("range mismatch")) {
+            return "server sent a bad range — tap to retry";
+        }
+        if (m.contains("incomplete")) {
+            return "download was cut short — tap to retry";
+        }
         if (m.contains("abort") || m.contains("reset") || m.contains("timeout") || m.contains("timed out")
                 || m.contains("eof") || m.contains("broken pipe") || m.contains("connection")
                 || m.contains("network") || m.contains("socket")) {
@@ -292,11 +359,16 @@ case MERGING:
         if (m.contains("404")) {
             return "link expired (404) — tap to retry";
         }
+        if (m.contains("empty output")) {
+            return "no data received — tap to retry";
+        }
         return e;
     }
 
     private void openPlayer(DownloadTask t) {
         if (t.outFile == null || !t.outFile.exists()) {
+            android.widget.Toast.makeText(act, "This file is no longer available.",
+                    android.widget.Toast.LENGTH_SHORT).show();
             return;
         }
         Intent i;

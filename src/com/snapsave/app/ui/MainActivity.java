@@ -99,6 +99,13 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         App.get().downloads().removeListener(refreshListener);
+        if (screens != null) {
+            for (Screen s : screens) {
+                if (s != null) {
+                    s.destroy();   // unregister app-wide listeners held by the singleton
+                }
+            }
+        }
         super.onDestroy();
     }
 
@@ -121,13 +128,21 @@ public class MainActivity extends Activity {
      * SnapTube-style: when a freshly-copied link is on the clipboard, resolve it and drop the user
      * straight into the download-options popup — the same sheet the share flow opens — so no pasting
      * is needed anywhere.
+     *
+     * Gated by a setting (off by default) so simply opening the app never steals focus with a
+     * popup. Browse's paste button offers the same link explicitly.
      */
     private void maybePromptClipboard() {
-        if (isFinishing()) {
+        if (isFinishing() || !com.snapsave.app.util.Prefs.clipboardPrompt()) {
             return;
         }
         String url = Util.clipboardUrl(this);
         if (url == null || url.equals(lastPromptedUrl)) {
+            return;
+        }
+        // Only react to links we can actually resolve: otherwise every stray copied URL would
+        // trigger a resolver request (and a FastSaver call) on app resume.
+        if (!com.snapsave.app.engine.Resolvers.isSupportedLink(url)) {
             return;
         }
         lastPromptedUrl = url;
@@ -138,27 +153,21 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Ask for the permissions a downloader needs, once, right after launch: notifications
-     * (Android 13+), and media/storage access so finished files are visible to the gallery
-     * and file managers. Declared in the manifest already — this is the runtime half.
+     * Ask for the one permission a downloader actually needs: notifications on Android 13+.
+     * Downloads are written to app-specific storage, which requires no media/storage grant —
+     * asking for it only produced an unexplained prompt on first launch.
      */
     private void requestRuntimePermissions() {
-        if (android.os.Build.VERSION.SDK_INT < 23) {
+        if (android.os.Build.VERSION.SDK_INT < 33) {
             return;
         }
         List<String> need = new ArrayList<String>();
-        if (android.os.Build.VERSION.SDK_INT >= 33) {
-            addMissing(need, android.Manifest.permission.POST_NOTIFICATIONS);
-            addMissing(need, android.Manifest.permission.READ_MEDIA_VIDEO);
-            addMissing(need, android.Manifest.permission.READ_MEDIA_AUDIO);
-        } else {
-            addMissing(need, android.Manifest.permission.READ_EXTERNAL_STORAGE);
-        }
-        if (android.os.Build.VERSION.SDK_INT <= 28) {
-            addMissing(need, android.Manifest.permission.WRITE_EXTERNAL_STORAGE);
-        }
+        addMissing(need, android.Manifest.permission.POST_NOTIFICATIONS);
         if (!need.isEmpty()) {
-            requestPermissions(need.toArray(new String[need.size()]), 1001);
+            try {
+                requestPermissions(need.toArray(new String[need.size()]), 1001);
+            } catch (Exception ignored) {
+            }
         }
     }
 

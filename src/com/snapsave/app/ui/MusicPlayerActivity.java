@@ -57,7 +57,17 @@ public class MusicPlayerActivity extends Activity {
             mp.start();
             playIcon.setImageResource(R.drawable.ic_pause);
         } catch (Exception e) {
+            // A half-initialised MediaPlayer throws on isPlaying()/start(); drop it entirely.
+            if (mp != null) {
+                try {
+                    mp.release();
+                } catch (Exception ignored) {
+                }
+                mp = null;
+            }
             playIcon.setImageResource(R.drawable.ic_play);
+            android.widget.Toast.makeText(this, "Cannot play this audio file.",
+                    android.widget.Toast.LENGTH_SHORT).show();
         }
 
         findViewById(R.id.m_play).setOnClickListener(new View.OnClickListener() {
@@ -66,12 +76,15 @@ public class MusicPlayerActivity extends Activity {
                 if (mp == null) {
                     return;
                 }
-                if (mp.isPlaying()) {
-                    mp.pause();
-                    playIcon.setImageResource(R.drawable.ic_play);
-                } else {
-                    mp.start();
-                    playIcon.setImageResource(R.drawable.ic_pause);
+                try {
+                    if (mp.isPlaying()) {
+                        mp.pause();
+                        playIcon.setImageResource(R.drawable.ic_play);
+                    } else {
+                        mp.start();
+                        playIcon.setImageResource(R.drawable.ic_pause);
+                    }
+                } catch (IllegalStateException ignored) {
                 }
             }
         });
@@ -80,7 +93,10 @@ public class MusicPlayerActivity extends Activity {
             @Override
             public void onProgressChanged(SeekBar s, int p, boolean fromUser) {
                 if (fromUser && mp != null) {
-                    cur.setText(Util.ms(mp.getDuration() * p / 100));
+                    try {
+                        cur.setText(Util.ms(mp.getDuration() * p / 100));
+                    } catch (IllegalStateException ignored) {
+                    }
                 }
             }
 
@@ -93,7 +109,10 @@ public class MusicPlayerActivity extends Activity {
             public void onStopTrackingTouch(SeekBar s) {
                 dragging = false;
                 if (mp != null) {
-                    mp.seekTo(mp.getDuration() * s.getProgress() / 100);
+                    try {
+                        mp.seekTo(mp.getDuration() * s.getProgress() / 100);
+                    } catch (IllegalStateException ignored) {
+                    }
                 }
             }
         });

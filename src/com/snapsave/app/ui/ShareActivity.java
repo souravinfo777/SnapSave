@@ -1,7 +1,9 @@
 package com.snapsave.app.ui;
 
 import android.app.Activity;
+import android.content.ClipData;
 import android.content.Intent;
+import android.net.Uri;
 import android.os.Bundle;
 import android.view.View;
 import android.widget.Toast;
@@ -20,6 +22,15 @@ import java.util.ArrayList;
  */
 public class ShareActivity extends Activity {
 
+    /**
+     * The link this flow is currently resolving, if any. A duplicate share intent (or the
+     * clipboard prompt firing while a share sheet is already up) must not stack a second sheet.
+     * Cleared on finish so the same link can be shared again later on purpose.
+     */
+    private static volatile String handlingUrl;
+    /** This instance's link — finish() only clears the guard when it is still ours. */
+    private String myUrl;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -29,6 +40,12 @@ public class ShareActivity extends Activity {
             finish();
             return;
         }
+        if (url.equals(handlingUrl)) {
+            finish();
+            return;
+        }
+        myUrl = url;
+        handlingUrl = url;
 
         setContentView(R.layout.activity_share);
         Insets.applyToContent(this);
@@ -46,7 +63,7 @@ public class ShareActivity extends Activity {
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
-                        if (isFinishing()) {
+                        if (isFinishing() || isDestroyed()) {
                             return;
                         }
                         if (r == null || !r.hasAnything()) {
@@ -81,6 +98,14 @@ public class ShareActivity extends Activity {
         }, "share-resolve").start();
     }
 
+    @Override
+    public void finish() {
+        if (myUrl != null && myUrl.equals(handlingUrl)) {
+            handlingUrl = null;   // let the same link be shared again later
+        }
+        super.finish();
+    }
+
     private String extract(Intent it) {
         if (it == null) {
             return null;
@@ -90,21 +115,72 @@ public class ShareActivity extends Activity {
             return it.getData().toString();
         }
         if (Intent.ACTION_SEND.equals(action)) {
-            CharSequence t = it.getCharSequenceExtra(Intent.EXTRA_TEXT);
-            if (t == null) {
-                t = it.getStringExtra(Intent.EXTRA_SUBJECT);
+            String u = firstFromText(it.getCharSequenceExtra(Intent.EXTRA_TEXT));
+            if (u == null) {
+                u = firstFromText(it.getCharSequenceExtra(Intent.EXTRA_SUBJECT));
             }
-            return t == null ? null : Resolvers.firstUrl(t.toString());
+            if (u == null) {
+                u = fromUri(it.getParcelableExtra(Intent.EXTRA_STREAM));
+            }
+            if (u == null) {
+                u = fromClip(it.getClipData());
+            }
+            return u;
         }
         if (Intent.ACTION_SEND_MULTIPLE.equals(action)) {
             ArrayList<CharSequence> list = it.getCharSequenceArrayListExtra(Intent.EXTRA_TEXT);
             if (list != null) {
                 for (CharSequence c : list) {
-                    String u = Resolvers.firstUrl(c == null ? null : c.toString());
+                    String u = firstFromText(c);
                     if (u != null) {
                         return u;
                     }
                 }
+            }
+            // Multi-share normally carries EXTRA_STREAM (Uris), not EXTRA_TEXT.
+            ArrayList<Uri> uris = it.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
+            if (uris != null) {
+                for (Uri uri : uris) {
+                    String u = fromUri(uri);
+                    if (u != null) {
+                        return u;
+                    }
+                }
+            }
+            return fromClip(it.getClipData());
+        }
+        return null;
+    }
+
+    /** First http(s) link in a shared text, or null when the text has none. */
+    private String firstFromText(CharSequence c) {
+        return c == null ? null : Resolvers.firstUrl(c.toString());
+    }
+
+    private String fromUri(Object o) {
+        if (!(o instanceof Uri)) {
+            return null;
+        }
+        String s = o.toString();
+        return s.startsWith("http") ? s : null;
+    }
+
+    private String fromClip(ClipData clip) {
+        if (clip == null) {
+            return null;
+        }
+        for (int i = 0; i < clip.getItemCount(); i++) {
+            ClipData.Item item = clip.getItemAt(i);
+            if (item == null) {
+                continue;
+            }
+            String u = firstFromText(item.getText());
+            if (u != null) {
+                return u;
+            }
+            Uri uri = item.getUri();
+            if (uri != null && uri.toString().startsWith("http")) {
+                return uri.toString();
             }
         }
         return null;

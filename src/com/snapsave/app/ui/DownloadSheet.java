@@ -43,6 +43,8 @@ public class DownloadSheet extends Dialog {
     private final List<StreamOption> options = new ArrayList<StreamOption>();
     private int selected = 0;
     private boolean dismissed = false;
+    /** Set while a task is being created, so a double tap cannot submit two downloads. */
+    private boolean submitting = false;
 
     private LinearLayout videoBox;
     private LinearLayout audioBox;
@@ -132,6 +134,9 @@ public class DownloadSheet extends Dialog {
             mp3.url = videos.get(0).url;
             mp3.mimeType = "audio/mpeg";
             mp3.bitrate = 320;
+            // The source is a video container: if the transcode fails, the fallback must keep the
+            // real container extension instead of guessing from an audio extension list.
+            mp3.sourceIsVideo = true;
             audios.add(mp3);
         }
 
@@ -252,7 +257,8 @@ public class DownloadSheet extends Dialog {
         }, "size-probe").start();
     }
 
-    private void render() {        videoBox.removeAllViews();
+    private void render() {
+        videoBox.removeAllViews();
         audioBox.removeAllViews();
         for (int i = 0; i < options.size(); i++) {
             StreamOption o = options.get(i);
@@ -306,14 +312,24 @@ public class DownloadSheet extends Dialog {
     }
 
     private void startDownload() {
-        if (options.isEmpty()) {
-            return;
+        startDownload(false);
+    }
+
+    /**
+     * @param resolvedUrl the caller already fetched the backend's signed URL, so the lazy-format
+     *                    branch must be skipped instead of doing the same network call twice.
+     */
+    private void startDownload(boolean resolvedUrl) {
+        if (options.isEmpty() || dismissed || (submitting && !resolvedUrl)) {
+            return;   // one tap, one task — double taps must not queue duplicates
         }
+        submitting = true;
         final StreamOption o = options.get(selected);
 
         // Backend formats (FastSaver) resolve to a signed URL only at download time.
-        if ((o.url == null || o.url.isEmpty()) && o.serverFormat != null && media.pageUrl != null) {
-            Toast.makeText(getContext(), "Preparing download…", Toast.LENGTH_SHORT).show();
+        if (!resolvedUrl && (o.url == null || o.url.isEmpty()) && o.serverFormat != null
+                && media.pageUrl != null) {
+            Toast.makeText(getContext(), "Preparing download...", Toast.LENGTH_SHORT).show();
             final String pageUrl = media.pageUrl;
             new Thread(new Runnable() {
                 @Override
@@ -322,11 +338,15 @@ public class DownloadSheet extends Dialog {
                     new android.os.Handler(android.os.Looper.getMainLooper()).post(new Runnable() {
                         @Override
                         public void run() {
+                            if (dismissed) {
+                                return;
+                            }
                             if (du == null) {
+                                submitting = false;
                                 Toast.makeText(getContext(), "Could not prepare this download.", Toast.LENGTH_LONG).show();
                             } else {
                                 o.url = du;
-                                startDownload();
+                                startDownload(true);   // bypasses the submitting guard
                             }
                         }
                     });
@@ -335,6 +355,7 @@ public class DownloadSheet extends Dialog {
             return;
         }
         if (o.url == null || o.url.isEmpty()) {
+            submitting = false;
             Toast.makeText(getContext(), "No download URL for this option.", Toast.LENGTH_SHORT).show();
             return;
         }
@@ -345,6 +366,7 @@ public class DownloadSheet extends Dialog {
         t.grad = grad;
         t.option = o;
         t.label = o.label;
+        t.sourceIsVideo = o.sourceIsVideo;
 
         DownloadTask.Part part = new DownloadTask.Part();
         part.url = o.url;
@@ -358,7 +380,7 @@ public class DownloadSheet extends Dialog {
         boolean image = o.mimeType != null && o.mimeType.startsWith("image");
         if (image) {
             t.kind = "file";
-            t.outName = clean(title, o) + ".jpg";
+            t.outName = clean(title, o) + imageExt(o);
             t.parts.add(part);
         } else if (o.serverFormat != null) {
             if (o.audioOnly) {
@@ -367,22 +389,29 @@ public class DownloadSheet extends Dialog {
                 t.outName = clean(title, o) + (m4a ? ".m4a" : ".mp3");
             } else {
                 t.kind = "video";
-                t.outName = clean(title, o) + ".mp4";
+                t.outName = clean(title, o) + videoExt(o);
             }
             t.parts.add(part);
         } else if (o.audioOnly) {
-            boolean mp3 = o.mimeType != null && o.mimeType.contains("mpeg");
-            t.kind = mp3 ? "mp3" : "m4a";
-            t.mp3Bitrate = mp3 ? Math.max(128, o.bitrate) : 0;
-            t.outName = clean(title, o) + (mp3 ? ".mp3" : ".m4a");
+            String ext = audioExt(o);
+            if (".mp3".equals(ext)) {
+                t.kind = "mp3";
+                t.mp3Bitrate = o.bitrate > 0 ? o.bitrate : 192;
+            } else if (".m4a".equals(ext) || ".aac".equals(ext)) {
+                t.kind = "m4a";
+            } else {
+                t.kind = "file";            // opus / flac / wav / ogg: copy untouched
+            }
+            t.outName = clean(title, o) + ext;
             t.parts.add(part);
         } else if (o.progressive || media.bestAudio == null || media.bestAudio.url == null) {
             t.kind = "video";
-            t.outName = clean(title, o) + ".mp4";
+            t.outName = clean(title, o) + videoExt(o);
             t.parts.add(part);
         } else {
+            // Video-only stream + separate audio track: download both and mux.
             t.kind = "video";
-            t.outName = clean(title, o) + ".mp4";
+            t.outName = clean(title, o) + videoExt(o);
             t.parts.add(part);
             DownloadTask.Part audio = new DownloadTask.Part();
             audio.url = media.bestAudio.url;
@@ -454,6 +483,41 @@ public class DownloadSheet extends Dialog {
             }
         }
         return false;
+    }
+
+    /** File extension for an image stream — never force a PNG/WebP into ".jpg". */
+    private static String imageExt(StreamOption o) {
+        String m = o.mimeType == null ? "" : o.mimeType.toLowerCase();
+        String u = o.url == null ? "" : o.url.toLowerCase();
+        if (m.contains("png") || u.contains(".png")) return ".png";
+        if (m.contains("webp") || u.contains("webp")) return ".webp";
+        if (m.contains("gif") || u.contains(".gif")) return ".gif";
+        return ".jpg";
+    }
+
+    /** Container extension for a video stream, based on MIME/URL rather than assuming MP4. */
+    private static String videoExt(StreamOption o) {
+        String m = o.mimeType == null ? "" : o.mimeType.toLowerCase();
+        String u = o.url == null ? "" : o.url.toLowerCase();
+        if (m.contains("webm") || u.contains(".webm")) return ".webm";
+        if (m.contains("matroska") || u.contains(".mkv")) return ".mkv";
+        if (m.contains("quicktime") || u.contains(".mov")) return ".mov";
+        if (u.contains(".3gp")) return ".3gp";
+        return ".mp4";
+    }
+
+    /** Container extension for an audio stream. */
+    private static String audioExt(StreamOption o) {
+        String m = o.mimeType == null ? "" : o.mimeType.toLowerCase();
+        String u = o.url == null ? "" : o.url.toLowerCase();
+        if (m.contains("mpeg") || u.contains(".mp3")) return ".mp3";
+        if (u.contains(".aac") || m.contains("aac")) return ".aac";
+        if (u.contains(".opus") || m.contains("opus")) return ".opus";
+        if (u.contains(".flac") || m.contains("flac")) return ".flac";
+        if (u.contains(".wav") || m.contains("wav")) return ".wav";
+        if (u.contains(".ogg") || m.contains("ogg")) return ".ogg";
+        if (u.contains(".webm")) return ".webm";
+        return ".m4a";
     }
 
     /** Estimated byte size of an MP3 at {@code kbps} for a "m:ss" duration; 0 when unknown. */

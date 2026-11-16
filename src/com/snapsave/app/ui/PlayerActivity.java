@@ -31,6 +31,8 @@ public class PlayerActivity extends Activity {
     private TextView total;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private boolean dragging = false;
+    /** True once MediaPlayer has prepared: controls must not touch the player before that. */
+    private boolean prepared = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -61,12 +63,23 @@ public class PlayerActivity extends Activity {
         });
 
         String src = path != null ? path : url;
-        if (src != null) {
+        if (src == null || src.trim().isEmpty()) {
+            android.widget.Toast.makeText(this, "Nothing to play.", android.widget.Toast.LENGTH_SHORT).show();
+            finish();
+            return;
+        }
+        if (!src.startsWith("http") && !new java.io.File(src).exists()) {
+            android.widget.Toast.makeText(this, "This file is missing.", android.widget.Toast.LENGTH_SHORT).show();
+            finish();
+            return;
+        }
+        {
             Uri uri = src.startsWith("http") ? Uri.parse(src) : Uri.fromFile(new java.io.File(src));
             video.setVideoURI(uri);
             video.setOnPreparedListener(new android.media.MediaPlayer.OnPreparedListener() {
                 @Override
                 public void onPrepared(android.media.MediaPlayer mp) {
+                    prepared = true;
                     mp.setLooping(false);
                     total.setText(Util.ms(mp.getDuration()));
                     video.start();
@@ -82,6 +95,7 @@ public class PlayerActivity extends Activity {
             video.setOnErrorListener(new android.media.MediaPlayer.OnErrorListener() {
                 @Override
                 public boolean onError(android.media.MediaPlayer mp, int what, int extra) {
+                    prepared = false;
                     android.widget.Toast.makeText(PlayerActivity.this, "Cannot play this file.", android.widget.Toast.LENGTH_SHORT).show();
                     playIcon.setImageResource(R.drawable.ic_play);
                     return true;
@@ -92,12 +106,23 @@ public class PlayerActivity extends Activity {
         findViewById(R.id.play_pause).setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                if (video.isPlaying()) {
-                    video.pause();
-                    playIcon.setImageResource(R.drawable.ic_play);
-                } else {
-                    video.start();
-                    playIcon.setImageResource(R.drawable.ic_pause);
+                if (!prepared) {
+                    android.widget.Toast.makeText(PlayerActivity.this, "Still preparing…",
+                            android.widget.Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                try {
+                    if (video.isPlaying()) {
+                        video.pause();
+                        playIcon.setImageResource(R.drawable.ic_play);
+                    } else {
+                        video.start();
+                        playIcon.setImageResource(R.drawable.ic_pause);
+                    }
+                } catch (IllegalStateException e) {
+                    prepared = false;
+                    android.widget.Toast.makeText(PlayerActivity.this, "Playback error.",
+                            android.widget.Toast.LENGTH_SHORT).show();
                 }
             }
         });
@@ -105,7 +130,7 @@ public class PlayerActivity extends Activity {
         seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar s, int p, boolean fromUser) {
-                if (fromUser && video.getDuration() > 0) {
+                if (fromUser && prepared && video.getDuration() > 0) {
                     cur.setText(Util.ms(video.getDuration() * p / 100));
                 }
             }
@@ -118,7 +143,7 @@ public class PlayerActivity extends Activity {
             @Override
             public void onStopTrackingTouch(SeekBar s) {
                 dragging = false;
-                if (video.getDuration() > 0) {
+                if (prepared && video.getDuration() > 0) {
                     video.seekTo(video.getDuration() * s.getProgress() / 100);
                 }
             }
@@ -148,8 +173,26 @@ public class PlayerActivity extends Activity {
     };
 
     @Override
+    protected void onPause() {
+        super.onPause();
+        try {
+            if (prepared && video != null && video.isPlaying()) {
+                video.pause();
+                playIcon.setImageResource(R.drawable.ic_play);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    @Override
     protected void onDestroy() {
         handler.removeCallbacks(tick);
+        try {
+            if (video != null) {
+                video.stopPlayback();     // release the decoder; onDestroy otherwise leaks it
+            }
+        } catch (Exception ignored) {
+        }
         super.onDestroy();
     }
 

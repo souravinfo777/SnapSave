@@ -126,6 +126,9 @@ public class BrowseScreen extends Screen {
                     @Override
                     public void run() {
                         searching = false;
+                        if (act.isFinishing() || act.isDestroyed()) {
+                            return;   // a stale response must not repopulate a dead screen
+                        }
                         showResults(items, items.isEmpty()
                                 ? "No results found"
                                 : items.size() + " results");

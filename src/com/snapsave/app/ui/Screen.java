@@ -17,4 +17,12 @@ public abstract class Screen {
     /** Called every time this screen becomes visible. */
     public void onShow() {
     }
+
+    /**
+     * Called once when the host activity is destroyed. Screens that register listeners on the
+     * app-wide DownloadManager must unregister here, or the singleton keeps the whole Activity
+     * (and its views) alive after every recreation.
+     */
+    public void destroy() {
+    }
 }

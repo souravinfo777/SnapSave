@@ -2,6 +2,8 @@ package com.snapsave.app;
 
 import android.app.Application;
 import android.content.Context;
+import android.os.Handler;
+import android.os.Looper;
 
 import com.snapsave.app.engine.DownloadManager;
 import com.snapsave.app.engine.Notifier;
@@ -18,6 +20,16 @@ public class App extends Application {
         Notifier.ensureChannel(this);
         downloadManager = new DownloadManager(this);
         downloadManager.loadPersisted();
+        // Downloads that were running when the process died are restored as paused, then
+        // resumed once the first screen has attached its listener (avoids a flash of 0%).
+        new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (downloadManager != null) {
+                    downloadManager.resumeRecovered();
+                }
+            }
+        }, 1200);
     }
 
     public static App get() {

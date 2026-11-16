@@ -20,7 +20,22 @@ public final class NativeStreams {
 
     /** True when both native engine libraries loaded successfully. */
     public static boolean available() {
-        return CombinTask.isSupported() && M4a2Mp3Task.isSupported();
+        return canMux() && canMp3();
+    }
+
+    /** The muxer (libvideo_v1.so) is loaded — independent of the audio transcoder. */
+    public static boolean canMux() {
+        return CombinTask.isSupported();
+    }
+
+    /** The M4A→MP3 transcoder (libmp3cvt.so) is loaded. */
+    public static boolean canMp3() {
+        return M4a2Mp3Task.isSupported();
+    }
+
+    /** The DASH→MPEG helper lives in the same library as the MP3 transcoder. */
+    public static boolean canDashM4a() {
+        return M4ANativeLib.isSupported();
     }
 
     /**

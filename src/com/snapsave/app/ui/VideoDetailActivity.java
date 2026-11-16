@@ -169,6 +169,9 @@ public class VideoDetailActivity extends Activity {
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
+                        if (isFinishing() || isDestroyed()) {
+                            return;
+                        }
                         if (items == null || items.isEmpty()) {
                             upTitle.setVisibility(View.GONE);
                             return;
@@ -219,6 +222,9 @@ public class VideoDetailActivity extends Activity {
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
+                        if (isFinishing() || isDestroyed()) {
+                            return;
+                        }
                         resolved = r;
                         resolving = false;
                         if (r != null) {
@@ -241,6 +247,11 @@ public class VideoDetailActivity extends Activity {
                             if (q != null) {
                                 ((TextView) findViewById(R.id.preview_badge)).setText(q);
                             }
+                        }
+                        if (r == null || !r.hasAnything()) {
+                            // Leave an actionable state instead of an enabled button that only toasts.
+                            downloadLabel.setText("Unavailable — tap to retry");
+                            return;
                         }
                         downloadLabel.setText("Download Video");
                         if (autoSheet && resolved != null && resolved.hasAnything()) {
@@ -271,6 +282,7 @@ public class VideoDetailActivity extends Activity {
             DownloadSheet.open(this, resolved, title, author, grad, false);
         } else {
             Toast.makeText(this, "No downloadable streams found for this link.", Toast.LENGTH_LONG).show();
+            resolveAsync();   // the link may still resolve on a second attempt
         }
     }
 }

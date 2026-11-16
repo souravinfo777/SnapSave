@@ -48,6 +48,27 @@ public final class Prefs {
         }
     }
 
+    // ---------------------------------------------------------------- clipboard
+
+    /**
+     * Open the download sheet for a freshly copied link on app resume.
+     *
+     * Off by default: silently popping a full-screen resolver over whatever the user was doing
+     * is a surprise. The Browse screen's paste button (and share/open-with) covers the same link
+     * without hijacking app entry.
+     */
+    public static boolean clipboardPrompt() {
+        SharedPreferences s = sp();
+        return s != null && s.getBoolean("clipboardPrompt", false);
+    }
+
+    public static void setClipboardPrompt(boolean v) {
+        SharedPreferences s = sp();
+        if (s != null) {
+            s.edit().putBoolean("clipboardPrompt", v).apply();
+        }
+    }
+
     // ---------------------------------------------------------------- API keys
 
     /** All configured FastSaver keys (one per line). Empty list disables FastSaver. */
@@ -61,12 +82,18 @@ public final class Prefs {
         if (raw != null) {
             for (String part : raw.split("[\\n,;]+")) {
                 String t = part.trim();
-                if (!t.isEmpty()) {
+                // A placeholder must never masquerade as a configured key: it would make the
+                // app spend a request (and time) on a key that can only fail.
+                if (!t.isEmpty() && !isPlaceholder(t)) {
                     out.add(t);
                 }
             }
         }
         return out;
+    }
+
+    private static boolean isPlaceholder(String key) {
+        return key.equals(DEFAULT_API_KEY) || "YOUR_FASTSAVER_KEY_HERE".equalsIgnoreCase(key);
     }
 
     /**
