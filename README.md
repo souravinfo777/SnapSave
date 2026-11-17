@@ -52,6 +52,7 @@ The UI includes Home, Browse/search, media detail and download options, Download
 - TikTok and other resolver results require a usable stream or backend format. The download sheet guards empty selections and reports submission errors; shared text/URLs receive improved extraction.
 - Remote thumbnails use source-specific headers, hashed cache keys and bounded decoding; local artwork is downsampled.
 - Download rows and notifications show progress. Player layouts match the implemented share, save, file-details and fullscreen controls; decorative unsupported controls have been removed.
+- New **Snap Play** brand mark: a lime field with a dark play triangle and a light download arrow. Legacy `mipmap-*` assets ship as rounded squares and circles at every density, the adaptive icon uses a lime gradient background layer, and the splash/brand vector uses the same mark. Master artwork: [docs/icon/snapsave-mark.svg](docs/icon/snapsave-mark.svg).
 
 This version was built and checked on the host. Android device testing was skipped at the user's request; these changes are not runtime-certified.
 
@@ -104,7 +105,7 @@ Keep the release keystore outside the project and assets. Do not commit or publi
 
 ## Verification and installation
 
-The current **1.11 (code 12)** build passed v1/v2/v3 signature verification, ZIP alignment and credential/signing-file packaging scans. All **17 host regression cases passed**, plus `ResolvedMediaValidityRegression`. The APK is **2,775,333 bytes**, with SHA-256 `9b58bfecd47bf251ddb5e09b4c0a6bd6ee1722c782bf1c162109b831a7e57f46`. The versioned artifact is [APK/SnapSave-v1.11.apk](APK/SnapSave-v1.11.apk). See [docs/VERIFICATION.md](docs/VERIFICATION.md) for the exact verification scope.
+The current **1.11 (code 12)** build passed v1/v2/v3 signature verification, ZIP alignment and credential/signing-file packaging scans. All **17 host regression cases passed**, plus `ResolvedMediaValidityRegression`. The APK is **2,800,519 bytes**, with SHA-256 `13be3cbdb197642290db577ea26669cefc79fc9d07d928bc2eb9634f58e963bb`. The versioned artifact is [APK/SnapSave-v1.11.apk](APK/SnapSave-v1.11.apk). See [docs/VERIFICATION.md](docs/VERIFICATION.md) for the exact verification scope.
 
 ```bash
 JAVA_HOME='/path/to/jdk-17' bash tests/run-host-tests.sh

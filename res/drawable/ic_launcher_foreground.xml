@@ -1,8 +1,12 @@
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
-    <!-- SnapSave mark: dark download-arrow, fits adaptive-icon safe zone (66x66 centered) -->
-    <group android:translateX="21" android:translateY="21" android:scaleX="0.6875" android:scaleY="0.6875">
-        <path android:fillColor="#FF06140C" android:pathData="M42,6 h12 v26 h14 L54,54 40,32 h12 z" />
-        <path android:fillColor="#FF06140C" android:pathData="M28,60 h40 v9 h-40 z" />
+    <!-- SnapSave mark: dark play triangle with a light download arrow. -->
+    <group android:scaleX="0.4714" android:scaleY="0.4714"
+        android:translateX="-10.82" android:translateY="-6.34">
+        <path android:fillColor="#FF18251C"
+            android:pathData="M79,70 Q79,59 89,65 L196,119 Q210,128 196,137 L89,191 Q79,197 79,186 Z" />
+        <path android:strokeColor="#FFE8FF9C" android:strokeWidth="13"
+            android:strokeLineCap="round" android:strokeLineJoin="round"
+            android:pathData="M125,101 V145 M108,131 L125,148 L142,131" />
     </group>
 </vector>

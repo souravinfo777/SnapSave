@@ -1,11 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="96dp" android:height="96dp" android:viewportWidth="96" android:viewportHeight="96">
-    <!-- rounded green tile -->
-    <path android:fillColor="#FF12E26A"
+    <!-- SnapSave mark, matching the launcher icon: lime tile, dark play triangle,
+         light download arrow. Solid fill keeps VectorDrawable gradients off API 21-23. -->
+    <path android:fillColor="#FFC9E84E"
         android:pathData="M24,2 h48 a22,22 0 0 1 22,22 v48 a22,22 0 0 1 -22,22 h-48 a22,22 0 0 1 -22,-22 v-48 a22,22 0 0 1 22,-22 z" />
-    <!-- download arrow -->
-    <path android:fillColor="#FF06140C"
-        android:pathData="M42,20 h12 v24 h13 L48,64 29,44 h13 z" />
-    <path android:fillColor="#FF06140C"
-        android:pathData="M30,70 h36 v8 h-36 z" />
+    <group android:scaleX="0.381" android:scaleY="0.381"
+        android:translateX="-4.4" android:translateY="-0.8">
+        <path android:fillColor="#FF18251C"
+            android:pathData="M79,70 Q79,59 89,65 L196,119 Q210,128 196,137 L89,191 Q79,197 79,186 Z" />
+        <path android:strokeColor="#FFE8FF9C" android:strokeWidth="13"
+            android:strokeLineCap="round" android:strokeLineJoin="round"
+            android:pathData="M125,101 V145 M108,131 L125,148 L142,131" />
+    </group>
 </vector>

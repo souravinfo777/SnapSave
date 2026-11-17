@@ -13,8 +13,15 @@ Completed checks:
 - APK credential/signing-file packaging scan passed; local API key assets were excluded.
 - All 17 host regression cases passed, including parallel byte ranges and ignored-Range
   fallback; `ResolvedMediaValidityRegression` passed.
-- APK: **2,775,333 bytes**; SHA-256
-  `9b58bfecd47bf251ddb5e09b4c0a6bd6ee1722c782bf1c162109b831a7e57f46`.
+- Launcher icon replaced with the approved **Snap Play** mark. `mipmap-{mdpi..xxxhdpi}`
+  carry both `ic_launcher.png` and `ic_launcher_round.png` at 48/72/96/144/192 px, the
+  adaptive icon uses `drawable/ic_launcher_background.xml` plus a vector foreground whose
+  mark clears the 66dp safe zone by roughly 3dp on every side, and `android:roundIcon`
+  now points at `@mipmap/ic_launcher_round`. `drawable/ic_logo.xml` uses the same mark.
+- Packaged icon assets were extracted back out of the signed APK and inspected: the
+  192px and 48px entries render as the new mark at the expected dimensions.
+- APK: **2,800,519 bytes**; SHA-256
+  `13be3cbdb197642290db577ea26669cefc79fc9d07d928bc2eb9634f58e963bb`.
 - Versioned artifact: `APK/SnapSave-v1.11.apk`.
 
 The interrupted implementation initially failed compilation because player layout IDs and
