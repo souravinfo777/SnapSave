@@ -61,9 +61,10 @@ public class DownloadTask {
 
     /** v1.10 legacy private output, or API 21-28 public file path. */
     public File outFile;
-    /** Canonical public Downloads/SnapSave output on scoped-storage devices. */
+    /** Canonical published output: a MediaStore row, or a document in the folder chosen in Settings. */
     public String outputUri;
-    /** In-progress MediaStore entry; persisted before copying so recovery can reconcile it. */
+    /** In-progress public entry (MediaStore row, or a part file in the chosen tree); persisted
+     *  before copying so recovery can reconcile it. */
     public String pendingUri;
     public long outputSize;
     public String thumbUrl;

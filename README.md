@@ -45,9 +45,29 @@ The UI includes Home, Browse/search, media detail and download options, Download
 - **Background music.** `MusicService` keeps playback alive with the screen off, a media-playback foreground service, audio focus, headphone-unplug handling, and play/pause/stop from the notification. Closing the music screen no longer stops the track.
 - **Faster lists.** Completed folders no longer re-inflate on every 400 ms progress tick, storage stats refresh at most every 5 s, and remote thumbnails use a bounded memory + disk cache with downsampling.
 
+## Download folder (1.12)
+
+**Settings → Download folder** decides where finished downloads are published:
+
+| Choice | Where files land | How it is written |
+|---|---|---|
+| **Download** (default) | the phone's own Download folder | MediaStore |
+| **Download/SnapSave** | a SnapSave folder inside Download | MediaStore |
+| **Another folder** | any folder the system picker exposes, including SD cards | folder's document tree |
+
+- *Another folder* opens the system folder picker (`ACTION_OPEN_DOCUMENT_TREE`) and keeps the grant across restarts. No new permission is declared: the picker grants access to the one folder the user chose.
+- Changing the folder affects **new downloads only**. Files already saved stay where they are, and My Files, Share, Open with, Rename and Delete keep working on them because each record stores the output it was published to.
+- Unfinished transfers, native mux/convert output and `library.json` always stay app-private. Only a complete, size-checked file is published.
+- A picked folder whose permission Android later revokes falls back to Download automatically.
+- Publication into a picked folder uses a `<name>.part` file that is renamed on completion, so an interrupted publish can never look finished; a leftover part file is cleaned up on the next start.
+- Files saved to a picked folder may not appear in gallery or music apps until the system indexes them — the Files app shows them immediately. The built-in choices are indexed immediately.
+- Android 9 and older still ask for `WRITE_EXTERNAL_STORAGE`; Android 10+ needs no storage permission.
+
+This version was built and checked on the host. Android device testing was skipped at the user's request; these changes are not runtime-certified.
+
 ## Public downloads and media fixes (1.11)
 
-- Successful downloads publish automatically to `Download/SnapSave`. Android 10+ uses MediaStore; Android 6–9 requests storage permission when needed. Publication errors retain the validated private source for retry, and pending MediaStore entries support recovery.
+- Successful downloads publish automatically to the folder chosen in Settings. Android 10+ uses MediaStore; Android 6–9 requests storage permission when needed. Publication errors retain the validated private source for retry, and pending public entries support recovery.
 - Completed-file actions, local thumbnails and players accept canonical content URIs while retaining support for older private-file records.
 - TikTok and other resolver results require a usable stream or backend format. The download sheet guards empty selections and reports submission errors; shared text/URLs receive improved extraction.
 - Remote thumbnails use source-specific headers, hashed cache keys and bounded decoding; local artwork is downsampled.
@@ -105,7 +125,7 @@ Keep the release keystore outside the project and assets. Do not commit or publi
 
 ## Verification and installation
 
-The current **1.11 (code 12)** build passed v1/v2/v3 signature verification, ZIP alignment and credential/signing-file packaging scans. All **17 host regression cases passed**, plus `ResolvedMediaValidityRegression`. The APK is **2,800,519 bytes**, with SHA-256 `13be3cbdb197642290db577ea26669cefc79fc9d07d928bc2eb9634f58e963bb`. The versioned artifact is [APK/SnapSave-v1.11.apk](APK/SnapSave-v1.11.apk). See [docs/VERIFICATION.md](docs/VERIFICATION.md) for the exact verification scope.
+The current **1.12 (code 13)** build passed v1/v2/v3 signature verification, ZIP alignment and credential/signing-file packaging scans. All **17 host regression cases passed**, plus `ResolvedMediaValidityRegression`. The APK is **2,800,519 bytes**, with SHA-256 `cfcc3cd3ba5c6ede7a75eac459189b3f00510bdba9a06c6216f897e189ed9733`. The versioned artifact is [APK/SnapSave-v1.12.apk](APK/SnapSave-v1.12.apk). See [docs/VERIFICATION.md](docs/VERIFICATION.md) for the exact verification scope.
 
 ```bash
 JAVA_HOME='/path/to/jdk-17' bash tests/run-host-tests.sh

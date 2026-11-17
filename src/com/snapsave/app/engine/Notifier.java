@@ -128,12 +128,12 @@ public final class Notifier {
             if (m == null || !enabled(c)) return;
             ensureChannel(c);
             boolean hasWarning = warning != null && !warning.isEmpty();
-            String body = (title == null ? "Media" : title) + "\nSaved to Download/SnapSave";
+            String body = (title == null ? "Media" : title) + "\nSaved to " + MediaFiles.locationLabel();
             if (path != null && !path.isEmpty() && !path.startsWith("content:")) body += "\n" + path;
             if (hasWarning) body += "\n" + ("video_only_no_audio".equals(warning)
                     ? "Video saved without an audio track" : "Check the download details for a warning");
             m.notify(id, builder(c).setContentTitle(hasWarning ? "Download completed with warning" : c.getString(R.string.download_complete))
-                    .setContentText(title == null ? "Saved to Download/SnapSave" : title)
+                    .setContentText(title == null ? "Saved to " + MediaFiles.locationLabel() : title)
                     .setStyle(new Notification.BigTextStyle().bigText(body)).setSmallIcon(R.drawable.ic_download)
                     .setAutoCancel(true).setContentIntent(openApp(c)).build());
         } catch (Throwable ignored) { }
@@ -164,7 +164,7 @@ public final class Notifier {
             case FAILED: return "Failed";
             case MERGING: return "Combining video and audio";
             case CONVERTING: return "Converting audio";
-            case PUBLISHING: return "Saving to Download/SnapSave";
+            case PUBLISHING: return "Saving to " + MediaFiles.locationLabel();
             default: return "Download";
         }
     }

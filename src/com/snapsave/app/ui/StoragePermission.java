@@ -11,6 +11,8 @@ import android.os.Build;
 import android.provider.Settings;
 import android.widget.Toast;
 
+import com.snapsave.app.engine.MediaFiles;
+
 import java.util.IdentityHashMap;
 import java.util.Map;
 
@@ -53,7 +55,8 @@ public final class StoragePermission {
             if (previous != null) previous.dismiss();
             final AlertDialog dialog = new AlertDialog.Builder(activity)
                     .setTitle("Storage access needed")
-                    .setMessage("Allow storage access to save in Downloads/SnapSave. Then tap Download again.")
+                    .setMessage("Allow storage access to save in " + MediaFiles.locationLabel()
+                            + ". Then tap Download again.")
                     .setPositiveButton("Open settings", new DialogInterface.OnClickListener() {
                         @Override public void onClick(DialogInterface dialog, int which) {
                             try {

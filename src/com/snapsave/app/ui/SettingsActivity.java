@@ -7,8 +7,10 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.provider.DocumentsContract;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.LayoutInflater;
@@ -33,6 +35,8 @@ import com.snapsave.app.util.Prefs;
 import java.util.Locale;
 
 public class SettingsActivity extends Activity {
+    /** Result code for the system folder picker. */
+    private static final int REQUEST_FOLDER = 1105;
     private LinearLayout box;
 
     private interface Action {
@@ -85,12 +89,11 @@ public class SettingsActivity extends Activity {
             });
         }
 
-        final String folder = MediaFiles.publicFolder().getAbsolutePath();
-        actionable(add(R.drawable.ic_folder, "Download folder", "Finished files save here automatically",
-                "Download/SnapSave"), new Action() {
+        actionable(add(R.drawable.ic_folder, "Download folder", "Where finished downloads are saved",
+                MediaFiles.locationLabel()), new Action() {
             @Override
             public void run() {
-                showDownloadFolder(folder);
+                chooseDownloadFolder();
             }
         });
         actionable(add(R.drawable.ic_tune, "Video quality", "Preferred maximum height for new downloads",
@@ -310,18 +313,127 @@ public class SettingsActivity extends Activity {
                         }).setNegativeButton("Cancel", null).show();
     }
 
-    private void showDownloadFolder(final String folder) {
+    /** Built-in folders plus the system picker, so any folder the provider exposes can be used. */
+    private void chooseDownloadFolder() {
+        final String[] labels = {
+                "Download — the phone's Download folder",
+                "Download/SnapSave — keep SnapSave files together",
+                "Another folder — pick one with the system picker"};
+        int current = Prefs.FOLDER_SNAPSAVE.equals(Prefs.downloadFolder()) ? 1
+                : Prefs.FOLDER_CUSTOM.equals(Prefs.downloadFolder()) ? 2 : 0;
         new AlertDialog.Builder(this).setTitle("Download folder")
-                .setMessage("Finished downloads are saved automatically to Download/SnapSave:\n\n" + folder
+                .setSingleChoiceItems(labels, current, new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface d, final int which) {
+                        if (which == 2) {
+                            d.dismiss();
+                            openFolderPicker();
+                            return;
+                        }
+                        saveChoice(d, new Action() {
+                            @Override
+                            public void run() {
+                                Prefs.setDownloadFolder(which == 1
+                                        ? Prefs.FOLDER_SNAPSAVE : Prefs.FOLDER_DOWNLOAD);
+                            }
+                        });
+                    }
+                })
+                .setNeutralButton("Folder info", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface d, int which) {
+                        showDownloadFolder();
+                    }
+                })
+                .setNegativeButton("Cancel", null).show();
+    }
+
+    private void openFolderPicker() {
+        try {
+            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                            | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                            | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+                            | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);
+            startActivityForResult(intent, REQUEST_FOLDER);
+        } catch (RuntimeException e) {
+            info("Download folder",
+                    "This device has no folder picker. Choose Download or Download/SnapSave instead.");
+        }
+    }
+
+    @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != REQUEST_FOLDER || resultCode != RESULT_OK || data == null) {
+            return;
+        }
+        Uri tree = data.getData();
+        if (tree == null) {
+            return;
+        }
+        try {
+            int flags = data.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+            getContentResolver().takePersistableUriPermission(tree, flags);
+        } catch (RuntimeException e) {
+            info("Download folder", "Android did not grant lasting access to that folder. Pick it again.");
+            return;
+        }
+        String previous = Prefs.downloadFolderUri();
+        try {
+            Prefs.setDownloadFolderCustom(tree.toString(), folderName(tree));
+        } catch (IllegalStateException e) {
+            showSaveError(e);
+            return;
+        }
+        releaseTree(previous, tree.toString());
+        build();
+    }
+
+    /** Folder name for the settings row; falls back to the last segment of the tree URI. */
+    private String folderName(Uri tree) {
+        try (android.database.Cursor c = getContentResolver().query(
+                DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree)),
+                new String[]{DocumentsContract.Document.COLUMN_DISPLAY_NAME}, null, null, null)) {
+            if (c != null && c.moveToFirst() && !c.isNull(0)) {
+                String name = c.getString(0);
+                if (name != null && !name.trim().isEmpty()) {
+                    return name.trim();
+                }
+            }
+        } catch (Exception ignored) { }
+        String last = tree.getLastPathSegment();
+        int colon = last == null ? -1 : last.lastIndexOf(':');
+        String fallback = last == null ? "" : last.substring(colon + 1);
+        return fallback.isEmpty() ? "Chosen folder" : fallback;
+    }
+
+    private void releaseTree(String oldUri, String newUri) {
+        if (oldUri == null || oldUri.isEmpty() || oldUri.equals(newUri)) {
+            return;
+        }
+        try {
+            getContentResolver().releasePersistableUriPermission(Uri.parse(oldUri),
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        } catch (Exception ignored) { }
+    }
+
+    private void showDownloadFolder() {
+        String detail = Prefs.FOLDER_CUSTOM.equals(Prefs.downloadFolder())
+                ? Prefs.downloadFolderUri() : MediaFiles.publicFolder().getAbsolutePath();
+        new AlertDialog.Builder(this).setTitle("Download folder")
+                .setMessage("Finished downloads are saved in " + MediaFiles.locationLabel() + ":\n\n" + detail
                         + "\n\nYou can find them in your device's Files app. Share and Open reuse the saved file. "
-                        + "Older downloads in private storage are saved here when you share or open them with another app.")
+                        + "Changing the folder affects new downloads only; files you already saved stay where they "
+                        + "are. Unfinished transfers always stay private until they are complete.")
                 .setPositiveButton("Copy path", new DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(DialogInterface d, int which) {
                         ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
                         if (cm != null) {
-                            cm.setPrimaryClip(ClipData.newPlainText("SnapSave download folder", folder));
-                            Toast.makeText(SettingsActivity.this, "Folder path copied", Toast.LENGTH_SHORT).show();
+                            cm.setPrimaryClip(ClipData.newPlainText("SnapSave download folder",
+                                    MediaFiles.locationLabel()));
+                            Toast.makeText(SettingsActivity.this, "Folder name copied", Toast.LENGTH_SHORT).show();
                         }
                     }
                 }).setNegativeButton("Close", null).show();
@@ -378,7 +490,8 @@ public class SettingsActivity extends Activity {
 
     private void confirmDeleteAll() {
         new AlertDialog.Builder(this).setTitle("Delete all downloaded files?")
-                .setMessage("This deletes every completed file tracked by SnapSave, including files in Download/SnapSave. It cannot be undone.")
+                .setMessage("This deletes every completed file tracked by SnapSave, wherever it was saved (including "
+                        + MediaFiles.locationLabel() + " and any earlier folder). It cannot be undone.")
                 .setPositiveButton("Delete", new DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(DialogInterface d, int which) {

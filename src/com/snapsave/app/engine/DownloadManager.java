@@ -374,7 +374,7 @@ public class DownloadManager {
                 task.error = null;
                 persist();
                 cleanupWorkingFiles(task);
-                Notifier.done(ctx, nid, task.title, "Download/SnapSave/" + task.outName, task.warning);
+                Notifier.done(ctx, nid, task.title, MediaFiles.locationLabel() + "/" + task.outName, task.warning);
             }
         } catch (Throwable failure) {
             synchronized (this) {

@@ -194,8 +194,8 @@ public class DownloadsScreen extends Screen {
             lastStorageUpdate = now;
             try {
                 StatFs sf = new StatFs(android.os.Environment.getExternalStorageDirectory().getAbsolutePath());
-                storageView.setText(Util.bytes(sf.getAvailableBytes()) + " free • Download/SnapSave");
-            } catch (Exception ignored) { storageView.setText("Saves to Download/SnapSave"); }
+                storageView.setText(Util.bytes(sf.getAvailableBytes()) + " free • " + MediaFiles.locationLabel());
+            } catch (Exception ignored) { storageView.setText("Saves to " + MediaFiles.locationLabel()); }
         }
         if (showCompleted) renderCompleted(done);
         else updateActiveRows(active);
@@ -342,7 +342,7 @@ public class DownloadsScreen extends Screen {
                             : "Converting audio…\nTransfer complete • preparing your file");
                     break;
                 case PUBLISHING:
-                    meta.setText("Saving to Download/SnapSave\n" + amount); break;
+                    meta.setText("Saving to " + MediaFiles.locationLabel() + "\n" + amount); break;
             }
             icon.setImageResource(image);
             action.setContentDescription(actionText);
@@ -521,8 +521,8 @@ public class DownloadsScreen extends Screen {
         if (error == null || error.trim().isEmpty()) return "Please retry";
         String m = error.toLowerCase(Locale.US);
         if (m.contains("permission") || m.contains("eacces")) return "Storage access needed • tap Retry and allow access";
-        if (m.contains("save_failed")) return "Could not save to Download/SnapSave • tap to retry saving";
-        if (m.contains("publish") || m.contains("public_media") || m.contains("download_folder")) return "Could not save to Download/SnapSave • tap to retry saving";
+        if (m.contains("save_failed")) return "Could not save to " + MediaFiles.locationLabel() + " • tap to retry saving";
+        if (m.contains("publish") || m.contains("public_media") || m.contains("download_folder")) return "Could not save to " + MediaFiles.locationLabel() + " • tap to retry saving";
         if (m.contains("background_start_blocked")) return "Open SnapSave and tap to resume";
         if (m.contains("video_only_no_audio")) return "Video saved without an audio track";
         if (m.contains("expired") || m.contains("404")) return "Link expired • reopen the source page";

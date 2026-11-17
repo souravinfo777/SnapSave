@@ -3,13 +3,17 @@ package com.snapsave.app.engine;
 import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Context;
+import android.content.UriPermission;
+import android.content.res.AssetFileDescriptor;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
+import android.provider.DocumentsContract;
 import android.provider.MediaStore;
 
 import com.snapsave.app.util.MediaExporter;
+import com.snapsave.app.util.Prefs;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -18,9 +22,16 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 
-/** Public Download/SnapSave output; transfer parts and native processing stay private. */
+/**
+ * The public output folder chosen in Settings; transfer parts and native processing stay private.
+ * Built-in choices publish through MediaStore, a folder picked with the system picker publishes
+ * through its document tree, and Android 9 and older use plain files.
+ */
 public final class MediaFiles {
-    private static final String RELATIVE_PATH = "Download/SnapSave/";
+    /** The phone's own Download folder. */
+    public static final String DOWNLOAD_LABEL = "Download";
+    /** Download/SnapSave, so SnapSave saves stay together. */
+    public static final String SNAPSAVE_LABEL = "Download/SnapSave";
     private static final Object PUBLISH_LOCK = new Object();
 
     private MediaFiles() { }
@@ -30,14 +41,58 @@ public final class MediaFiles {
         void checkpoint() throws Exception;
     }
 
+    /** Short label for the current output folder, safe to show in rows and notifications. */
+    public static String locationLabel() {
+        if (Prefs.FOLDER_SNAPSAVE.equals(Prefs.downloadFolder())) {
+            return SNAPSAVE_LABEL;
+        }
+        if (Prefs.FOLDER_CUSTOM.equals(Prefs.downloadFolder())) {
+            String name = Prefs.downloadFolderName();
+            return name.isEmpty() ? "Chosen folder" : name;
+        }
+        return DOWNLOAD_LABEL;
+    }
+
+    /** MediaStore collection path for the built-in choices. */
+    private static String relativePath() {
+        return Prefs.FOLDER_SNAPSAVE.equals(Prefs.downloadFolder()) ? SNAPSAVE_LABEL + "/" : "Download/";
+    }
+
+    private static Uri chosenTree() {
+        String value = Prefs.downloadFolderUri();
+        if (value.isEmpty()) {
+            return null;
+        }
+        try {
+            Uri tree = Uri.parse(value);
+            return "content".equals(tree.getScheme()) ? tree : null;
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    /** A picked folder without its persisted grant must not be used. */
+    private static boolean hasTreeAccess(Context context, Uri tree) {
+        for (UriPermission permission : context.getContentResolver().getPersistedUriPermissions()) {
+            if (permission.isWritePermission() && tree.equals(permission.getUri())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public static Uri publish(Context context, DownloadTask task, File source, Progress progress)
             throws Exception {
         if (source == null || !source.isFile() || source.length() == 0) {
             throw new IOException("empty_output");
         }
         synchronized (PUBLISH_LOCK) {
+            Uri tree = chosenTree();
+            if (tree != null && hasTreeAccess(context, tree)) {
+                return Saf.publish(context, tree, task, source, progress);
+            }
             if (Build.VERSION.SDK_INT >= 29) {
-                return Api29.publish(context, task, source, progress);
+                return Api29.publish(context, task, source, progress, relativePath());
             }
             if (Build.VERSION.SDK_INT >= 23 && context.checkSelfPermission(
                     android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
@@ -97,14 +152,27 @@ public final class MediaFiles {
         return task.outFile == null ? null : Uri.fromFile(task.outFile);
     }
 
+    private static boolean isDocument(Context context, Uri uri) {
+        return uri != null && DocumentsContract.isDocumentUri(context, uri);
+    }
+
+    private static long documentSize(Context context, Uri uri) {
+        if (uri == null) return -1;
+        try (Cursor c = context.getContentResolver().query(uri,
+                new String[]{DocumentsContract.Document.COLUMN_SIZE}, null, null, null)) {
+            if (c != null && c.moveToFirst() && !c.isNull(0)) return c.getLong(0);
+        } catch (Exception ignored) { }
+        return -1;
+    }
+
     public static boolean exists(Context context, DownloadTask task) {
         if (task == null) return false;
+        Uri uri = uri(task);
         if ((task.outputUri == null || task.outputUri.isEmpty()) && task.outFile != null
                 && task.outFile.isFile()) return task.outFile.length() > 0;
-        Uri uri = uri(task);
         if (uri == null) return false;
-        try (android.content.res.AssetFileDescriptor fd = context.getContentResolver()
-                .openAssetFileDescriptor(uri, "r")) {
+        if (isDocument(context, uri)) return documentSize(context, uri) >= 0;
+        try (AssetFileDescriptor fd = context.getContentResolver().openAssetFileDescriptor(uri, "r")) {
             return fd != null;
         } catch (Exception ignored) { return false; }
     }
@@ -112,7 +180,12 @@ public final class MediaFiles {
     public static long size(Context context, DownloadTask task) {
         if (task == null) return 0;
         if (task.outFile != null && task.outFile.isFile()) return task.outFile.length();
-        return longColumn(context, uri(task), MediaStore.MediaColumns.SIZE, task.outputSize);
+        Uri uri = uri(task);
+        if (isDocument(context, uri)) {
+            long size = documentSize(context, uri);
+            return size > 0 ? size : task.outputSize;
+        }
+        return longColumn(context, uri, MediaStore.MediaColumns.SIZE, task.outputSize);
     }
 
     public static String displayName(Context context, DownloadTask task) {
@@ -120,9 +193,11 @@ public final class MediaFiles {
         if (task.outFile != null && task.outFile.isFile()) return task.outFile.getName();
         Uri uri = uri(task);
         if (uri != null) {
+            String column = isDocument(context, uri)
+                    ? DocumentsContract.Document.COLUMN_DISPLAY_NAME : MediaStore.MediaColumns.DISPLAY_NAME;
             try (Cursor c = context.getContentResolver().query(uri,
-                    new String[]{MediaStore.MediaColumns.DISPLAY_NAME}, null, null, null)) {
-                if (c != null && c.moveToFirst()) return c.getString(0);
+                    new String[]{column}, null, null, null)) {
+                if (c != null && c.moveToFirst() && !c.isNull(0)) return c.getString(0);
             } catch (Exception ignored) { }
         }
         return task.outName == null ? "" : task.outName;
@@ -147,6 +222,13 @@ public final class MediaFiles {
         }
         Uri uri = uri(task);
         if (uri == null) return false;
+        if (isDocument(context, uri)) {
+            Uri renamed = DocumentsContract.renameDocument(context.getContentResolver(), uri, name);
+            if (renamed == null) return false;
+            task.outputUri = renamed.toString();
+            task.outName = displayName(context, task);
+            return true;
+        }
         ContentValues values = new ContentValues();
         values.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
         if (context.getContentResolver().update(uri, values, null, null) <= 0) return false;
@@ -158,21 +240,39 @@ public final class MediaFiles {
         if (task == null) return true;
         Uri uri = task.outputUri == null ? null : Uri.parse(task.outputUri);
         try {
-            if (uri != null) context.getContentResolver().delete(uri, null, null);
+            if (uri != null) {
+                if (isDocument(context, uri)) {
+                    if (!DocumentsContract.deleteDocument(context.getContentResolver(), uri)) return false;
+                } else {
+                    context.getContentResolver().delete(uri, null, null);
+                }
+            }
             if (task.outFile != null && task.outFile.exists() && !task.outFile.delete()) return false;
             task.outputUri = null;
             return true;
-        } catch (RuntimeException e) { return false; }
+        } catch (Exception e) { return false; }
     }
 
     /** Reconcile a process death between inserting, copying and clearing IS_PENDING. */
     public static boolean recoverPending(Context context, DownloadTask task) {
-        if (task.pendingUri == null || Build.VERSION.SDK_INT < 29) return false;
+        if (task == null || task.pendingUri == null) return false;
+        Uri pending = Uri.parse(task.pendingUri);
+        if (isDocument(context, pending)) {
+            // A leftover part file only means the copy never finished: drop it and let the retry
+            // publish again from the validated private file.
+            try { DocumentsContract.deleteDocument(context.getContentResolver(), pending); }
+            catch (Exception ignored) { }
+            task.pendingUri = null;
+            return false;
+        }
+        if (Build.VERSION.SDK_INT < 29) return false;
         return Api29.recover(context, task);
     }
 
+    /** Public folder as a file path; used by the Android 9 and older publication path. */
     public static File publicFolder() {
-        return new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "SnapSave");
+        File downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+        return Prefs.FOLDER_SNAPSAVE.equals(Prefs.downloadFolder()) ? new File(downloads, "SnapSave") : downloads;
     }
 
     public static String safeName(String name) {
@@ -220,12 +320,13 @@ public final class MediaFiles {
     }
 
     private static final class Api29 {
-        static Uri publish(Context context, DownloadTask task, File source, Progress progress) throws Exception {
+        static Uri publish(Context context, DownloadTask task, File source, Progress progress, String relativePath)
+                throws Exception {
             ContentResolver resolver = context.getContentResolver();
             ContentValues values = new ContentValues();
             values.put(MediaStore.MediaColumns.DISPLAY_NAME, safeName(task.outName));
             values.put(MediaStore.MediaColumns.MIME_TYPE, MediaExporter.mimeType(task));
-            values.put(MediaStore.MediaColumns.RELATIVE_PATH, RELATIVE_PATH);
+            values.put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath);
             values.put(MediaStore.MediaColumns.IS_PENDING, 1);
             Uri uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
             if (uri == null) throw new IOException("could_not_create_public_media_entry");
@@ -270,6 +371,42 @@ public final class MediaFiles {
             task.pendingUri = null;
             task.outputUri = null;
             return false;
+        }
+    }
+
+    /** A folder the user picked with the system picker; it may be anywhere the provider exposes. */
+    private static final class Saf {
+        static Uri publish(Context context, Uri tree, DownloadTask task, File source, Progress progress)
+                throws Exception {
+            ContentResolver resolver = context.getContentResolver();
+            Uri parent = DocumentsContract.buildDocumentUriUsingTree(
+                    tree, DocumentsContract.getTreeDocumentId(tree));
+            String mime = MediaExporter.mimeType(task);
+            Uri part = DocumentsContract.createDocument(resolver, parent, mime,
+                    safeName(task.outName) + ".part");
+            if (part == null) throw new IOException("could_not_create_public_file");
+            task.pendingUri = part.toString();
+            boolean published = false;
+            try {
+                if (progress != null) progress.checkpoint();
+                copy(source, resolver.openOutputStream(part, "w"), progress);
+                // Rename is the publish step: the provider resolves duplicate names itself.
+                Uri done = DocumentsContract.renameDocument(resolver, part, safeName(task.outName));
+                if (done == null) throw new IOException("public_file_publish_failed");
+                task.outputUri = done.toString();
+                task.outputSize = source.length();
+                task.pendingUri = null;
+                task.outName = displayName(context, task);
+                if (progress != null) progress.checkpoint();
+                published = true;
+                return done;
+            } finally {
+                if (!published) {
+                    try { DocumentsContract.deleteDocument(resolver, part); } catch (Exception ignored) { }
+                    task.pendingUri = null;
+                    task.outputUri = null;
+                }
+            }
         }
     }
 }

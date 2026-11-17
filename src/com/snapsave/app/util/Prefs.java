@@ -283,6 +283,63 @@ public final class Prefs {
         return false;
     }
 
+    // ---------------------------------------------------------------- output folder
+
+    /** The phone's own Download folder. */
+    public static final String FOLDER_DOWNLOAD = "download";
+    /** Download/SnapSave, so SnapSave saves stay together. */
+    public static final String FOLDER_SNAPSAVE = "snapsave";
+    /** A folder the user picked with the system folder picker. */
+    public static final String FOLDER_CUSTOM = "custom";
+
+    /** Falls back to Download when a picked folder lost its permission. */
+    public static String downloadFolder() {
+        SharedPreferences s = sp();
+        String value = s == null ? FOLDER_DOWNLOAD : s.getString("downloadFolder", FOLDER_DOWNLOAD);
+        if (FOLDER_SNAPSAVE.equals(value)) {
+            return FOLDER_SNAPSAVE;
+        }
+        if (FOLDER_CUSTOM.equals(value) && !downloadFolderUri().isEmpty()) {
+            return FOLDER_CUSTOM;
+        }
+        return FOLDER_DOWNLOAD;
+    }
+
+    public static void setDownloadFolder(String value) {
+        String mode = value == null ? "" : value.trim().toLowerCase(Locale.US);
+        if (!FOLDER_DOWNLOAD.equals(mode) && !FOLDER_SNAPSAVE.equals(mode) && !FOLDER_CUSTOM.equals(mode)) {
+            throw new IllegalStateException("Choose Download, Download/SnapSave or another folder.");
+        }
+        save(requirePreferences().edit().putString("downloadFolder", mode));
+    }
+
+    /** Tree URI of the picked folder; empty for the built-in choices. */
+    public static String downloadFolderUri() {
+        SharedPreferences s = sp();
+        String value = s == null ? null : s.getString("downloadFolderUri", "");
+        return value == null ? "" : value.trim();
+    }
+
+    /** Display name of the picked folder, so screens can name it without asking the provider. */
+    public static String downloadFolderName() {
+        SharedPreferences s = sp();
+        String value = s == null ? null : s.getString("downloadFolderName", "");
+        return value == null ? "" : value.trim();
+    }
+
+    /** Store a folder picked with ACTION_OPEN_DOCUMENT_TREE; the caller already holds the grant. */
+    public static void setDownloadFolderCustom(String treeUri, String displayName) {
+        String uri = treeUri == null ? "" : treeUri.trim();
+        if (!uri.startsWith("content://")) {
+            throw new IllegalStateException("That folder cannot be used. Pick it again.");
+        }
+        String name = displayName == null ? "" : displayName.trim();
+        save(requirePreferences().edit()
+                .putString("downloadFolder", FOLDER_CUSTOM)
+                .putString("downloadFolderUri", uri)
+                .putString("downloadFolderName", name));
+    }
+
     // ---------------------------------------------------------------- clipboard
 
     /** Explicit opt-in to open a download sheet for a copied link on app resume. */

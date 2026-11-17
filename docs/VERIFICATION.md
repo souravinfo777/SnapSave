@@ -1,5 +1,45 @@
 # Verification record
 
+## 2026-11-17 — version 1.12 (code 13)
+
+Added the user-selectable output folder. Built with Microsoft OpenJDK 17.0.20.1, Android SDK
+`D:/android-sdk`, build-tools 35.0.0 and platform android-35. Minimum API stays 21, target
+API stays 35. No new permission was declared.
+
+Completed checks:
+
+- Resource compile/link, Java compile, D8, package and signing all succeeded.
+- APK signature schemes v1/v2/v3 verified; ZIP alignment and credential/signing-file
+  packaging scans passed; local API key assets excluded.
+- All 17 host regression cases passed and `ResolvedMediaValidityRegression` passed.
+- The packaged `classes.dex` was searched for the new symbols and contains them:
+  `downloadFolder`, `locationLabel`, `OPEN_DOCUMENT_TREE`,
+  `takePersistableUriPermission`, `createDocument`, `renameDocument`.
+- No stale display literal for a fixed folder remains in `src`; the only remaining
+  `Download/SnapSave` strings are the settings chooser labels and the preference
+  validation message.
+- APK: **2,800,519 bytes**; SHA-256
+  `cfcc3cd3ba5c6ede7a75eac459189b3f00510bdba9a06c6216f897e189ed9733`.
+- Versioned artifact: `APK/SnapSave-v1.12.apk`.
+
+What the change does:
+
+- `Prefs` stores the folder mode (`download` default, `snapsave`, `custom`) plus the picked
+  tree URI and its display name.
+- `MediaFiles.publish` routes three ways: a picked folder publishes through its document
+  tree (`createDocument` a `<name>.part`, copy, then `renameDocument` as the publish step),
+  the built-in choices publish through `MediaStore.Downloads` with the matching
+  `RELATIVE_PATH`, and Android 9 and older use plain files.
+- `exists`, `size`, `displayName`, `rename` and `delete` handle document URIs through
+  `DocumentsContract`, and `rename` updates the stored output URI. Recovery drops a leftover
+  part file and leaves the validated private file for a retry.
+- Settings shows the current folder and offers both built-in choices plus the system picker;
+  the grant is persisted and the previous one is released when the choice changes.
+
+Not verified: **no Android runtime test was performed**, so the picked-folder path, the
+part-file rename, permission persistence across a restart and the Android 9 and older branch
+are unverified at runtime. Live provider behaviour is unrelated to this change.
+
 ## 2026-11-17 — version 1.11 (code 12)
 
 Built the resumed storage, resolver, thumbnail and UI changes with Microsoft OpenJDK
