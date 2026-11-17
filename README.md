@@ -31,9 +31,19 @@ The queue downloads streams through `HttpURLConnection`. A foreground download s
 
 Adaptive video/audio pairs are muxed through `CombinTask.combvideo` in `libvideo_v1.so`; M4A-to-MP3 conversion and DASH M4A normalization use `libmp3cvt.so`. The JNI bridge classes retain the original `com.snaptube.taskManager` names and native signatures. Native libraries are bundled for ARM only. A library loading or conversion failure must not be interpreted as verified output; check the resulting media on a supported device.
 
-Settings includes Wi-Fi-only downloading and preferred video/audio/MP3 defaults. These changes are under integration and verification; device validation of network transitions, restored queues, and format selection remains upcoming. A preference is a requested default, and a resolver may not offer a matching format.
+Settings includes Wi-Fi-only downloading, simultaneous download count, parallel connections per file, preferred video/audio/MP3 defaults, the download folder info, the native engine status, local storage usage, and About. A preference is a requested default, and a resolver may not offer a matching format.
 
-The UI includes Home, Browse/search, media detail and download options, Downloads, My Files, video/music players, and Settings.
+The UI includes Home, Browse/search, media detail and download options, Downloads, My Files, video/music players, and Settings. Bengali (`values-bn`) resources are included.
+
+## Speed, storage and playback (1.10)
+
+- **Parallel range downloads.** A single media file is fetched over up to 8 HTTP range connections when the server returns `206` and a usable `Content-Range`. Segments resume independently after pause, process death, or a dropped socket, and are concatenated only after every segment reached its exact byte count. Servers that ignore `Range` (return `200`) and files under 1 MiB automatically use the proven single-stream path.
+- **Video and audio together.** Adaptive video-only and audio-only parts are transferred concurrently instead of one after another, so muxed downloads are not serialised.
+- **Configurable throughput.** Settings → *Simultaneous downloads* (1–8) and *Connections per download* (1–8) apply to Wi-Fi and mobile data alike. The worker limit is enforced with a transfer slot, so changing it does not require restarting the app.
+- **Public export.** My Files and completed Downloads rows expose Share, Export to Gallery/Music, Open with another app, Rename, and Delete. Android 10+ publishes through MediaStore with no storage permission; Android 9 and older ask for `WRITE_EXTERNAL_STORAGE` on demand.
+- **Local thumbnails.** My Files and completed rows show a real video frame or embedded album art, decoded at thumbnail size and cached in memory/disk. Image files open through the system viewer after export.
+- **Background music.** `MusicService` keeps playback alive with the screen off, a media-playback foreground service, audio focus, headphone-unplug handling, and play/pause/stop from the notification. Closing the music screen no longer stops the track.
+- **Faster lists.** Completed folders no longer re-inflate on every 400 ms progress tick, storage stats refresh at most every 5 s, and remote thumbnails use a bounded memory + disk cache with downsampling.
 
 ## Build
 
@@ -84,7 +94,7 @@ Keep the release keystore outside the project and assets. Do not commit or publi
 
 ## Verification and installation
 
-The final portable build passed v1/v2/v3 signature verification, 16 KiB ZIP alignment, credential/signing-file packaging scans, and the private `dataSync` service manifest check. All **15 host regression cases passed**. The resulting version `1.9` (code `10`) APK is `2,652,379` bytes, with SHA-256 `1fed9d5654a8bfe44a49550b988414f638f5b66778b1e01ac83fcf714cf130d3`. See [docs/VERIFICATION.md](docs/VERIFICATION.md) for the test scope and pending device checks.
+The final portable build passed v1/v2/v3 signature verification, 16 KiB ZIP alignment, credential/signing-file packaging scans, and the private `dataSync`/`mediaPlayback` service manifest checks. All **17 host regression cases passed**, including segmented range transfer and the `200` fallback. The resulting version `1.10` (code `11`) APK is `2,705,627` bytes, with SHA-256 `ec098e3e91e37738063470f7d5016ddbb6b69c352c9b6db75268ab4200f89340`. See [docs/VERIFICATION.md](docs/VERIFICATION.md) for the test scope and pending device checks.
 
 ```bash
 JAVA_HOME='/path/to/jdk-17' bash tests/run-host-tests.sh

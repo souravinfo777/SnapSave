@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">SnapSave</string>
+    <string name="brand_first">Snap</string>
+    <string name="brand_second">Save</string>
+    <string name="tagline">ভিডিও • মিউজিক • দ্রুত ডাউনলোড</string>
+    <string name="version_line">ভার্সন 1.10 • ফ্রি</string>
+
+    <string name="search_hint">ভিডিও, মিউজিক খুঁজুন...</string>
+    <string name="popular_sites">জনপ্রিয় সাইট</string>
+    <string name="all_sites">সব সাইট</string>
+    <string name="trending_now">এখন জনপ্রিয়</string>
+    <string name="see_all">সব দেখুন</string>
+
+    <string name="tab_home">হোম</string>
+    <string name="tab_browse">ব্রাউজ</string>
+    <string name="tab_downloads">ডাউনলোড</string>
+    <string name="tab_files">আমার ফাইল</string>
+
+    <string name="download_video">ভিডিও ডাউনলোড</string>
+    <string name="download">ডাউনলোড</string>
+    <string name="up_next">পরবর্তী</string>
+    <string name="subscribe">সাবস্ক্রাইব</string>
+
+    <string name="tab_downloading">ডাউনলোড হচ্ছে</string>
+    <string name="tab_completed">সম্পন্ন</string>
+    <string name="now_downloading">এখন ডাউনলোড হচ্ছে</string>
+    <string name="completed_today">আজ সম্পন্ন</string>
+    <string name="pause_all">সব থামান</string>
+    <string name="resume_all">সব চালু করুন</string>
+    <string name="downloads_title">ডাউনলোড</string>
+
+    <string name="library_title">আমার ফাইল</string>
+    <string name="settings_title">টুলস ও সেটিংস</string>
+
+    <string name="video_quality">ভিডিও</string>
+    <string name="audio_only">শুধু অডিও</string>
+    <string name="link_copied">লিংক কপি হয়েছে — ডাউনলোড করতে ট্যাপ করুন</string>
+    <string name="channel_downloads">ডাউনলোড</string>
+    <string name="channel_downloads_desc">ডাউনলোডের অগ্রগতি ও সম্পন্ন ফাইল</string>
+    <string name="download_complete">ডাউনলোড সম্পন্ন</string>
+    <string name="downloading">ডাউনলোড হচ্ছে...</string>
+    <string name="queued_waiting">কিউতে • ফ্রি স্লটের অপেক্ষায়</string>
+</resources>

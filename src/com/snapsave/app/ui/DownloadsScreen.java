@@ -3,6 +3,8 @@ package com.snapsave.app.ui;
 import android.content.Intent;
 import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
+import android.net.Uri;
+import android.os.Build;
 import android.os.StatFs;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -12,12 +14,15 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import com.snapsave.app.App;
 import com.snapsave.app.R;
 import com.snapsave.app.engine.DownloadManager;
 import com.snapsave.app.engine.DownloadTask;
 import com.snapsave.app.engine.MediaTypes;
+import com.snapsave.app.util.LocalThumb;
+import com.snapsave.app.util.MediaExporter;
 import com.snapsave.app.util.Util;
 
 import java.text.DateFormat;
@@ -45,6 +50,8 @@ public class DownloadsScreen extends Screen {
     private TextView pauseAll;
 
     private boolean showCompleted = false;
+    private String lastCompletedSignature = "";
+    private long lastStorageUpdate;
 
     public DownloadsScreen(MainActivity act) {
         super(act, R.layout.fragment_downloads);
@@ -148,11 +155,10 @@ public class DownloadsScreen extends Screen {
         });
 
         pauseAll.setText(act.getString(anyRunning() ? R.string.pause_all : R.string.resume_all));
-
         tabDownloading.setText("Downloading (" + active.size() + ")");
 
+        // Active rows are few and their progress changes on every tick, so they are rebuilt.
         downloadingBox.removeAllViews();
-        completedBox.removeAllViews();
 
         double totalSpeed = 0;
         int activeNow = 0;
@@ -171,22 +177,30 @@ public class DownloadsScreen extends Screen {
             totalAll += t.total();
         }
 
-        String previousDay = null;
-        for (DownloadTask t : done) {
-            String day = completionDay(t.completedAt);
-            if (!day.equals(previousDay)) {
-                TextView header = new TextView(act);
-                header.setText(day);
-                header.setTextColor(act.getResources().getColor(R.color.text_primary));
-                header.setTextSize(18);
-                header.setTypeface(null, android.graphics.Typeface.BOLD);
-                header.setPadding(0, Util.dp(act, 16), 0, Util.dp(act, 8));
-                completedBox.addView(header);
-                previousDay = day;
-            }
-            completedBox.addView(buildRow(completedBox, t));
-        }
         completedHeader.setText(done.isEmpty() ? "No completed downloads" : "Completed (" + done.size() + ")");
+
+        // A long completed history does not change while a file downloads. Re-inflating it on
+        // every 400 ms progress callback made the whole screen stutter on big libraries.
+        String signature = completedSignature(done);
+        if (!signature.equals(lastCompletedSignature)) {
+            lastCompletedSignature = signature;
+            completedBox.removeAllViews();
+            String previousDay = null;
+            for (DownloadTask t : done) {
+                String day = completionDay(t.completedAt);
+                if (!day.equals(previousDay)) {
+                    TextView header = new TextView(act);
+                    header.setText(day);
+                    header.setTextColor(act.getResources().getColor(R.color.text_primary));
+                    header.setTextSize(18);
+                    header.setTypeface(null, android.graphics.Typeface.BOLD);
+                    header.setPadding(0, Util.dp(act, 16), 0, Util.dp(act, 8));
+                    completedBox.addView(header);
+                    previousDay = day;
+                }
+                completedBox.addView(buildRow(completedBox, t));
+            }
+        }
 
         String sp = Util.speed(totalSpeed);
         if (sp == null || sp.isEmpty()) {
@@ -200,18 +214,33 @@ public class DownloadsScreen extends Screen {
         statSub.setText(activeNow + " active • " + waiting + " waiting • " + netLabel());
         int pct = totalAll > 0 ? (int) (totalDone * 100 / totalAll) : 0;
         statProgress.setProgress(pct);
-        long free = 0;
-        try {
-            StatFs sf = new StatFs(dm.dir().getAbsolutePath());
-            free = sf.getAvailableBytes();
-        } catch (Exception ignored) {
+
+        long now = System.currentTimeMillis();
+        if (now - lastStorageUpdate > 5000) {
+            lastStorageUpdate = now;
+            long free = 0;
+            try {
+                StatFs sf = new StatFs(dm.dir().getAbsolutePath());
+                free = sf.getAvailableBytes();
+            } catch (Exception ignored) {
+            }
+            storageView.setText("Storage " + Util.bytes(free) + " free");
         }
-        storageView.setText("Storage " + Util.bytes(free) + " free");
 
         View dlSection = downloadingBox;
         dlSection.setVisibility(showCompleted ? View.GONE : View.VISIBLE);
         completedHeader.setVisibility(showCompleted ? View.VISIBLE : View.GONE);
         completedBox.setVisibility(showCompleted ? View.VISIBLE : View.GONE);
+    }
+
+    /** Cheap identity of the completed list: task id, completion time and published size. */
+    private static String completedSignature(List<DownloadTask> done) {
+        StringBuilder sb = new StringBuilder();
+        for (DownloadTask t : done) {
+            sb.append(t.id).append(':').append(t.completedAt).append(':')
+                    .append(t.outFile == null ? 0 : t.outFile.length()).append('|');
+        }
+        return sb.toString();
     }
 
     private String netLabel() {
@@ -232,6 +261,13 @@ public class DownloadsScreen extends Screen {
         ((View) row.findViewById(R.id.thumb_bg)).setBackgroundResource(Util.grad(t.grad));
         ((TextView) row.findViewById(R.id.thumb_duration)).setText(t.label);
         ((TextView) row.findViewById(R.id.video_title)).setText(t.title);
+        row.setOnLongClickListener(new View.OnLongClickListener() {
+            @Override
+            public boolean onLongClick(View v) {
+                showRowActions(t);
+                return true;
+            }
+        });
 
         TextView meta = (TextView) row.findViewById(R.id.video_meta);
         ProgressBar pb = (ProgressBar) row.findViewById(R.id.video_progress);
@@ -241,6 +277,8 @@ public class DownloadsScreen extends Screen {
         switch (t.state) {
             case COMPLETED:
                 pb.setVisibility(View.GONE);
+                LocalThumb.load((ImageView) row.findViewById(R.id.thumb_bg), t.outFile,
+                        MediaTypes.mediaType(t), Util.grad(t.grad));
                 String warning = completedWarning(t);
                 meta.setMaxLines(warning.isEmpty() ? 1 : 4);
                 meta.setText(Util.bytes(t.outFile != null ? t.outFile.length() : 0) + " • Completed"
@@ -373,6 +411,94 @@ public class DownloadsScreen extends Screen {
                 break;
         }
         return row;
+    }
+
+    private void showRowActions(final DownloadTask t) {
+        final List<String> items = new ArrayList<String>();
+        if (t.state == DownloadTask.State.COMPLETED) {
+            items.add("Play");
+            items.add("Share");
+            items.add("Export to Gallery/Music");
+            items.add("Delete");
+        } else if (t.state == DownloadTask.State.FAILED || t.state == DownloadTask.State.PAUSED) {
+            items.add("Resume");
+            items.add("Delete");
+        } else if (t.state == DownloadTask.State.QUEUED) {
+            items.add("Remove from queue");
+        } else {
+            items.add("Pause");
+            items.add("Delete");
+        }
+        new android.app.AlertDialog.Builder(act)
+                .setTitle(t.title == null || t.title.isEmpty() ? "Download" : t.title)
+                .setItems(items.toArray(new String[items.size()]),
+                        new android.content.DialogInterface.OnClickListener() {
+                            @Override
+                            public void onClick(android.content.DialogInterface dialog, int which) {
+                                String label = items.get(which);
+                                if ("Play".equals(label)) {
+                                    openPlayer(t);
+                                } else if ("Resume".equals(label)) {
+                                    dm.resume(t);
+                                } else if ("Pause".equals(label)) {
+                                    dm.pause(t);
+                                } else if ("Share".equals(label)) {
+                                    shareCompleted(t);
+                                } else if (label.startsWith("Export")) {
+                                    exportCompleted(t);
+                                } else if ("Remove from queue".equals(label)) {
+                                    dm.remove(t);
+                                } else if ("Delete".equals(label)) {
+                                    confirmDelete(t);
+                                }
+                            }
+                        }).show();
+    }
+
+    private void confirmDelete(final DownloadTask t) {
+        new android.app.AlertDialog.Builder(act).setTitle("Delete this download?")
+                .setMessage("The partial or finished file will be removed from this device.")
+                .setPositiveButton("Delete", new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface dialog, int which) {
+                        dm.remove(t);
+                    }
+                }).setNegativeButton("Cancel", null).show();
+    }
+
+    private void shareCompleted(DownloadTask t) {
+        Uri uri = exportForShare(t);
+        if (uri == null) {
+            return;
+        }
+        Intent send = new Intent(Intent.ACTION_SEND);
+        send.setType(MediaExporter.mimeType(t));
+        send.putExtra(Intent.EXTRA_STREAM, uri);
+        send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        act.startActivity(Intent.createChooser(send, "Share file"));
+    }
+
+    private void exportCompleted(DownloadTask t) {
+        if (exportForShare(t) != null) {
+            Toast.makeText(act, "Saved to the public SnapSave folder", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private Uri exportForShare(DownloadTask t) {
+        if (MediaExporter.needsLegacyPermission() && Build.VERSION.SDK_INT >= 23
+                && act.checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            act.requestPermissions(new String[]{android.Manifest.permission.WRITE_EXTERNAL_STORAGE}, 1003);
+            Toast.makeText(act, "Allow storage access, then try again.", Toast.LENGTH_SHORT).show();
+            return null;
+        }
+        try {
+            return MediaExporter.export(act, t);
+        } catch (Exception e) {
+            Toast.makeText(act, e.getMessage() == null ? "Export failed." : e.getMessage(),
+                    Toast.LENGTH_SHORT).show();
+            return null;
+        }
     }
 
     private String completionDay(long timestamp) {

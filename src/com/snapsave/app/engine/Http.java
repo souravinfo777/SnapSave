@@ -3,6 +3,7 @@ package com.snapsave.app.engine;
 import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -10,6 +11,14 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.SocketTimeoutException;
 import java.net.URL;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 /** Minimal HTTP client (HttpURLConnection) with progress + cancellation for the download engine. */
 public final class Http {
@@ -471,7 +480,7 @@ public final class Http {
 
     /**
      * Download {@code url} into {@code out}. Reports progress. Throws {@link Cancelled}
-     * when {@code token.cancelled} becomes true.
+     * when {@code token.stopped()} becomes true.
      */
     private static final int MAX_ATTEMPTS = 5;
 
@@ -484,40 +493,46 @@ public final class Http {
      */
     public static void download(String url, File out, String referer, String ua, Progress p, CancelToken token)
             throws IOException {
+        download(url, out, referer, ua, p, token, 1);
+    }
+
+    /**
+     * Download with optional parallel range connections. {@code connections > 1} enables a
+     * segmented transfer for new files when the server supports byte ranges; resumed partials
+     * and range-less servers automatically fall back to the proven single-stream path.
+     */
+    public static void download(String url, File out, String referer, String ua, Progress p,
+                                CancelToken token, int connections) throws IOException {
         String ref = referer;
         IOException last = null;
         for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
             checkRequestScope();
-            if (Thread.currentThread().isInterrupted() || (token != null && token.cancelled)) {
+            if (Thread.currentThread().isInterrupted() || (token != null && token.stopped())) {
                 throw new Cancelled();
             }
             long already = out != null && out.exists() ? out.length() : 0;
             try {
-                downloadOnce(url, out, ref, ua, p, token, already);
+                downloadOnce(url, out, ref, ua, p, token, already, connections);
                 return;
             } catch (Cancelled c) {
                 throw c;
             } catch (IOException e) {
                 last = e;
-                if (token != null && token.cancelled) {
+                if (token != null && token.stopped()) {
                     throw new Cancelled();
                 }
                 String m = e.getMessage() == null ? "" : e.getMessage();
                 if (m.startsWith("insecure")) {
                     throw e;                  // policy violation — retrying cannot help
                 }
-                if (m.contains("range mismatch")) {
-                    // The server answered 206 from an offset we did not request. Discard the
-                    // partial so the next attempt starts from byte 0 instead of appending twice.
-                    boolean dropped = out != null && (!out.exists() || out.delete());
-                    if (dropped && attempt < MAX_ATTEMPTS) {
-                        continue;
+                if (m.contains("range mismatch") || m.contains("416")) {
+                    // The server answered 206 from an offset we did not request, or our
+                    // partial is stale. Discard every partial so the next attempt starts
+                    // from byte 0 instead of appending twice.
+                    boolean dropped = out != null;
+                    if (dropped) {
+                        deletePartial(out);
                     }
-                    throw e;
-                }
-                if (m.contains("416")) {
-                    // Our partial is stale or oversized. Drop it and start the part over.
-                    boolean dropped = out != null && (!out.exists() || out.delete());
                     if (dropped && attempt < MAX_ATTEMPTS) {
                         continue;
                     }
@@ -537,7 +552,7 @@ public final class Http {
                 long pause = 700L * attempt;
                 while (pause > 0) {
                     checkRequestScope();
-                    if (token != null && token.cancelled) {
+                    if (token != null && token.stopped()) {
                         throw new Cancelled();
                     }
                     long slice = Math.min(100L, pause);
@@ -556,7 +571,11 @@ public final class Http {
     }
 
     private static void downloadOnce(String url, File out, String referer, String ua, Progress p,
-                                     CancelToken token, long already) throws IOException {
+                                     CancelToken token, long already, int connections) throws IOException {
+        if (connections > 1 && already <= 0 && out != null
+                && downloadSegmented(url, out, referer, ua, p, token, connections)) {
+            return;
+        }
         // Redirects are followed by hand: an https -> http downgrade must fail with a readable
         // error instead of an opaque "CleartextNotPermittedException" halfway through a body.
         String cur = url;
@@ -646,7 +665,7 @@ public final class Http {
                 int n;
                 while (true) {
                     checkRequestScope();
-                    if (Thread.currentThread().isInterrupted() || (token != null && token.cancelled)) {
+                    if (Thread.currentThread().isInterrupted() || (token != null && token.stopped())) {
                         throw new Cancelled();
                     }
                     c.setReadTimeout(boundedTimeout(60000));
@@ -655,7 +674,7 @@ public final class Http {
                     if (n <= 0) {
                         break;
                     }
-                    if (token != null && token.cancelled) {
+                    if (token != null && token.stopped()) {
                         throw new Cancelled();
                     }
                     fos.write(buf, 0, n);
@@ -692,6 +711,533 @@ public final class Http {
         }
     }
 
+    // ------------------------------------------------------------ segmented downloads
+
+    private static final int MAX_SEGMENTS = 8;
+    private static final long MIN_SEGMENTED_BYTES = 1024L * 1024L; // 1 MiB
+
+    /** Bytes already saved for {@code out}: the published partial plus any segment files. */
+    public static long partialBytes(File out) {
+        if (out == null) {
+            return 0;
+        }
+        long bytes = out.exists() ? out.length() : 0;
+        for (int i = 0; i < MAX_SEGMENTS; i++) {
+            File seg = segmentFile(out, i);
+            if (seg.exists()) {
+                bytes += seg.length();
+            }
+        }
+        return bytes;
+    }
+
+    /** Remove the partial file plus every segment and plan file owned by it. */
+    public static void deletePartial(File out) {
+        if (out == null) {
+            return;
+        }
+        if (out.exists()) {
+            out.delete();
+        }
+        for (int i = 0; i < MAX_SEGMENTS; i++) {
+            File seg = segmentFile(out, i);
+            if (seg.exists()) {
+                seg.delete();
+            }
+        }
+        File meta = metaFile(out);
+        if (meta.exists()) {
+            meta.delete();
+        }
+    }
+
+    private static File segmentFile(File out, int index) {
+        return new File(out.getAbsolutePath() + ".seg" + index);
+    }
+
+    private static File metaFile(File out) {
+        return new File(out.getAbsolutePath() + ".segmeta");
+    }
+
+    private static String urlKey(String url) {
+        return url == null ? "" : Integer.toHexString(url.hashCode()) + ":" + url.length();
+    }
+
+    private static final class SegPlan {
+        final long total;
+        final int count;
+        final String key;
+
+        SegPlan(long total, int count, String key) {
+            this.total = total;
+            this.count = count;
+            this.key = key;
+        }
+
+        long start(int index) {
+            return total * index / count;
+        }
+
+        long length(int index) {
+            return total * (index + 1) / count - start(index);
+        }
+    }
+
+    /** Internal signal that a server/file cannot be fetched over ranges. */
+    private static final class SegUnsupported extends IOException {
+        SegUnsupported() {
+            super("segmented download unsupported");
+        }
+    }
+
+    private static SegPlan loadPlan(File out) {
+        File meta = metaFile(out);
+        if (!meta.exists()) {
+            return null;
+        }
+        try {
+            String text = readSmall(meta);
+            String[] f = text.trim().split("\\s+");
+            if (f.length < 4 || !"v1".equals(f[0])) {
+                deletePartial(out);
+                return null;
+            }
+            long total = Long.parseLong(f[1]);
+            int count = Integer.parseInt(f[2]);
+            String key = f[3];
+            if (total <= 0 || count < 2 || count > MAX_SEGMENTS) {
+                deletePartial(out);
+                return null;
+            }
+            // Drop segment files left behind by a wider previous plan.
+            for (int i = count; i < MAX_SEGMENTS; i++) {
+                File stale = segmentFile(out, i);
+                if (stale.exists()) {
+                    stale.delete();
+                }
+            }
+            return new SegPlan(total, count, key);
+        } catch (Exception e) {
+            deletePartial(out);
+            return null;
+        }
+    }
+
+    private static void writePlan(File out, SegPlan plan) throws IOException {
+        File meta = metaFile(out);
+        File tmp = new File(meta.getAbsolutePath() + ".tmp");
+        FileOutputStream fos = new FileOutputStream(tmp);
+        try {
+            fos.write(("v1 " + plan.total + " " + plan.count + " " + plan.key + "\n").getBytes("UTF-8"));
+            fos.flush();
+        } finally {
+            fos.close();
+        }
+        if (!tmp.renameTo(meta)) {
+            meta.delete();
+            if (!tmp.renameTo(meta)) {
+                tmp.delete();
+                throw new IOException("segmeta_write_failed");
+            }
+        }
+    }
+
+    private static String readSmall(File file) throws IOException {
+        InputStream in = new FileInputStream(file);
+        try {
+            ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            byte[] buf = new byte[256];
+            int n;
+            while (bos.size() < 512 && (n = in.read(buf)) > 0) {
+                bos.write(buf, 0, n);
+            }
+            return new String(bos.toByteArray(), "UTF-8");
+        } finally {
+            in.close();
+        }
+    }
+
+    /** Probe one range request; null means "use the single-stream path". */
+    private static SegPlan probePlan(String url, String referer, String ua,
+                                     CancelToken token, int connections) throws IOException {
+        String cur = url;
+        HttpURLConnection c = null;
+        int code = -1;
+        for (int hop = 0; hop <= 5; hop++) {
+            checkRequestScope();
+            if (token != null && token.stopped()) {
+                throw new Cancelled();
+            }
+            c = open(cur, referer, ua);
+            c.setConnectTimeout(boundedTimeout(20000));
+            c.setReadTimeout(boundedTimeout(60000));
+            c.setRequestProperty("Accept", "*/*");
+            c.setRequestProperty("Accept-Encoding", "identity");
+            c.setRequestProperty("Range", "bytes=0-");
+            code = c.getResponseCode();
+            if (code < 300 || code >= 400) {
+                break;
+            }
+            String loc = c.getHeaderField("Location");
+            String next = loc == null ? null : new URL(new URL(cur), loc).toString();
+            c.disconnect();
+            c = null;
+            if (next == null) {
+                throw new HttpException(code);
+            }
+            requireHttps(next);
+            cur = next;
+        }
+        if (c == null) {
+            throw new IOException("too many redirects");
+        }
+        try {
+            if (code == 206) {
+                long total = rangeTotal(c.getHeaderField("Content-Range"));
+                long start = rangeStart(c.getHeaderField("Content-Range"));
+                int count = Math.min(Math.max(2, connections), MAX_SEGMENTS);
+                if (start == 0 && total >= MIN_SEGMENTED_BYTES
+                        && total / count >= MIN_SEGMENTED_BYTES / 4) {
+                    return new SegPlan(total, count, urlKey(url));
+                }
+                return null;
+            }
+            if (code >= 400) {
+                throw new HttpException(code);
+            }
+            return null;                       // 200/204: server ignores ranges
+        } finally {
+            c.disconnect();
+        }
+    }
+
+    /**
+     * Download a fresh file over several range connections. Returns false when the server or
+     * the file is unsuitable, in which case the caller falls back to the single stream.
+     */
+    private static boolean downloadSegmented(String url, File out, String referer, String ua,
+                                             Progress p, CancelToken token, int connections)
+            throws IOException {
+        SegPlan plan = loadPlan(out);
+        if (plan == null || !plan.key.equals(urlKey(url)) || plan.total < MIN_SEGMENTED_BYTES) {
+            if (plan != null) {
+                deletePartial(out);
+            }
+            plan = probePlan(url, referer, ua, token, connections);
+            if (plan == null) {
+                return false;
+            }
+            deletePartial(out);
+            writePlan(out, plan);
+        }
+        if (out.exists() && out.length() > 0 && !out.delete()) {
+            throw new IOException("output_reset_failed");
+        }
+        final SegPlan fp = plan;
+        final CancelToken group = new CancelToken();
+        group.parent = token;
+        final AtomicReference<IOException> failure = new AtomicReference<IOException>();
+        final SegProgress reporter = new SegProgress(out, fp.total, p);
+        reporter.report(true);
+        ExecutorService workers = Executors.newFixedThreadPool(fp.count,
+                new java.util.concurrent.ThreadFactory() {
+                    @Override public Thread newThread(Runnable runnable) {
+                        Thread thread = new Thread(runnable, "snapsave-segment");
+                        thread.setDaemon(true);
+                        return thread;
+                    }
+                });
+        List<Future<?>> futures = new ArrayList<Future<?>>();
+        try {
+            for (int i = 0; i < fp.count; i++) {
+                final int index = i;
+                futures.add(workers.submit(new Runnable() {
+                    @Override public void run() {
+                        try {
+                            if (group.stopped()) {
+                                throw new Cancelled();
+                            }
+                            fetchSegment(url, segmentFile(out, index), referer, ua,
+                                    fp.start(index), fp.length(index), fp.total, group, reporter);
+                        } catch (Throwable error) {
+                            if (error instanceof Cancelled
+                                    && (token == null || !token.stopped())) {
+                                return;         // sibling abort, not the primary failure
+                            }
+                            if (error instanceof IOException) {
+                                failure.compareAndSet(null, (IOException) error);
+                            } else {
+                                failure.compareAndSet(null, new IOException(error));
+                            }
+                            group.cancelled = true;
+                        }
+                    }
+                }));
+            }
+            for (int i = 0; i < futures.size(); i++) {
+                try {
+                    futures.get(i).get();
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    group.cancelled = true;
+                    throw new Cancelled();
+                } catch (ExecutionException ee) {
+                    Throwable cause = ee.getCause();
+                    if (cause instanceof IOException) {
+                        failure.compareAndSet(null, (IOException) cause);
+                    } else {
+                        failure.compareAndSet(null, new IOException(cause));
+                    }
+                    group.cancelled = true;
+                }
+            }
+        } finally {
+            workers.shutdownNow();
+            try {
+                workers.awaitTermination(2, TimeUnit.SECONDS);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        if (token != null && token.stopped()) {
+            throw new Cancelled();
+        }
+        IOException error = failure.get();
+        if (error instanceof SegUnsupported) {
+            deletePartial(out);
+            return false;
+        }
+        if (error != null) {
+            throw error;
+        }
+        for (int i = 0; i < fp.count; i++) {
+            if (segmentFile(out, i).length() != fp.length(i)) {
+                throw new IOException("segment_incomplete");
+            }
+        }
+        concatenate(out, fp.count);
+        reporter.finish();
+        for (int i = 0; i < fp.count; i++) {
+            segmentFile(out, i).delete();
+        }
+        metaFile(out).delete();
+        return true;
+    }
+
+    private static void fetchSegment(String url, File seg, String referer, String ua,
+                                     long offset, long length, long total,
+                                     CancelToken token, SegProgress reporter) throws IOException {
+        IOException last = null;
+        for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+            checkRequestScope();
+            if (token != null && token.stopped()) {
+                throw new Cancelled();
+            }
+            long have = seg.exists() ? seg.length() : 0;
+            if (have > length) {
+                truncate(seg, 0);
+                have = 0;
+            }
+            if (have == length) {
+                return;
+            }
+            try {
+                fetchSegmentOnce(url, seg, referer, ua, offset + have, length - have,
+                        total, token, reporter);
+                reporter.report(true);
+                return;
+            } catch (Cancelled c) {
+                throw c;
+            } catch (SegUnsupported unsupported) {
+                throw unsupported;
+            } catch (HttpException http) {
+                throw http;
+            } catch (IOException e) {
+                last = e;
+                if (attempt >= MAX_ATTEMPTS) {
+                    throw e;
+                }
+                backoff(attempt, token);
+            }
+        }
+        throw last == null ? new IOException("segment failed") : last;
+    }
+
+    private static void fetchSegmentOnce(String url, File seg, String referer, String ua,
+                                         long from, long want, long expectedTotal,
+                                         CancelToken token, SegProgress reporter) throws IOException {
+        String cur = url;
+        HttpURLConnection c = null;
+        int code = -1;
+        for (int hop = 0; hop <= 5; hop++) {
+            checkRequestScope();
+            if (token != null && token.stopped()) {
+                throw new Cancelled();
+            }
+            c = open(cur, referer, ua);
+            c.setConnectTimeout(boundedTimeout(20000));
+            c.setReadTimeout(boundedTimeout(60000));
+            c.setRequestProperty("Accept", "*/*");
+            c.setRequestProperty("Accept-Encoding", "identity");
+            c.setRequestProperty("Range", "bytes=" + from + "-");
+            code = c.getResponseCode();
+            if (code < 300 || code >= 400) {
+                break;
+            }
+            String loc = c.getHeaderField("Location");
+            String next = loc == null ? null : new URL(new URL(cur), loc).toString();
+            c.disconnect();
+            c = null;
+            if (next == null) {
+                throw new HttpException(code);
+            }
+            requireHttps(next);
+            cur = next;
+        }
+        if (c == null) {
+            throw new IOException("too many redirects");
+        }
+        try {
+            if (code == 200 || code == 416) {
+                throw new SegUnsupported();
+            }
+            if (code >= 400) {
+                throw new HttpException(code);
+            }
+            if (code != 206) {
+                throw new SegUnsupported();
+            }
+            String cr = c.getHeaderField("Content-Range");
+            long start = rangeStart(cr);
+            long total = rangeTotal(cr);
+            if (start != from || (total > 0 && total != expectedTotal)) {
+                throw new SegUnsupported();
+            }
+            InputStream in = new BufferedInputStream(c.getInputStream(), 65536);
+            FileOutputStream fos = new FileOutputStream(seg, true);
+            long remaining = want;
+            try {
+                byte[] buf = new byte[65536];
+                while (remaining > 0) {
+                    checkRequestScope();
+                    if (Thread.currentThread().isInterrupted() || (token != null && token.stopped())) {
+                        throw new Cancelled();
+                    }
+                    c.setReadTimeout(boundedTimeout(60000));
+                    int n = in.read(buf, 0, (int) Math.min(buf.length, remaining));
+                    checkRequestScope();
+                    if (n <= 0) {
+                        break;
+                    }
+                    if (token != null && token.stopped()) {
+                        throw new Cancelled();
+                    }
+                    fos.write(buf, 0, n);
+                    remaining -= n;
+                    reporter.report(false);
+                }
+                fos.flush();
+            } finally {
+                try {
+                    fos.close();
+                } catch (Exception ignored) {
+                }
+                try {
+                    in.close();
+                } catch (Exception ignored) {
+                }
+            }
+            if (remaining > 0) {
+                throw new IOException("segment incomplete " + remaining);
+            }
+        } finally {
+            c.disconnect();
+        }
+    }
+
+    private static void backoff(int attempt, CancelToken token) throws IOException {
+        long pause = 700L * attempt;
+        while (pause > 0) {
+            checkRequestScope();
+            if (token != null && token.stopped()) {
+                throw new Cancelled();
+            }
+            long slice = Math.min(100L, pause);
+            try {
+                Thread.sleep(slice);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                throw new Cancelled();
+            }
+            pause -= slice;
+        }
+        checkRequestScope();
+    }
+
+    private static void concatenate(File out, int count) throws IOException {
+        File parent = out.getParentFile();
+        if (parent != null && !parent.exists()) {
+            parent.mkdirs();
+        }
+        FileOutputStream fos = new FileOutputStream(out, false);
+        byte[] buf = new byte[65536];
+        try {
+            for (int i = 0; i < count; i++) {
+                FileInputStream fis = new FileInputStream(segmentFile(out, i));
+                try {
+                    int n;
+                    while ((n = fis.read(buf)) > 0) {
+                        fos.write(buf, 0, n);
+                    }
+                } finally {
+                    fis.close();
+                }
+            }
+            fos.flush();
+        } finally {
+            fos.close();
+        }
+    }
+
+    /** Aggregates progress by summing segment files, so no byte counter can drift on retry. */
+    private static final class SegProgress {
+        private final File out;
+        private final long total;
+        private final Progress progress;
+        private long last;
+
+        SegProgress(File out, long total, Progress progress) {
+            this.out = out;
+            this.total = total;
+            this.progress = progress;
+        }
+
+        synchronized void report(boolean force) {
+            if (progress == null) {
+                return;
+            }
+            long now = System.currentTimeMillis();
+            if (!force && now - last < 150) {
+                return;
+            }
+            last = now;
+            long done = 0;
+            for (int i = 0; i < MAX_SEGMENTS; i++) {
+                File seg = segmentFile(out, i);
+                if (seg.exists()) {
+                    done += seg.length();
+                }
+            }
+            progress.onProgress(Math.min(done, total), total);
+        }
+
+        synchronized void finish() {
+            if (progress != null) {
+                progress.onProgress(total, total);
+            }
+        }
+    }
+
     /** Hard cap on buffered response bodies — a hostile/huge page must not exhaust the heap. */
     private static final int MAX_BODY = 8 * 1024 * 1024;
 
@@ -723,5 +1269,22 @@ public final class Http {
     /** Simple cooperative cancellation token shared with the worker thread. */
     public static final class CancelToken {
         public volatile boolean cancelled = false;
+        /**
+         * Optional parent token. Segmented downloads give every connection its own token and
+         * point it at the user-facing task token, so a pause stops every connection at once.
+         */
+        public volatile CancelToken parent;
+
+        /** True when this token or any parent token was cancelled. */
+        public boolean stopped() {
+            CancelToken t = this;
+            for (int guard = 0; t != null && guard < 8; guard++) {
+                if (t.cancelled) {
+                    return true;
+                }
+                t = t.parent;
+            }
+            return false;
+        }
     }
 }

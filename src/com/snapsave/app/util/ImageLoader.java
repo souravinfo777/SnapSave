@@ -7,18 +7,32 @@ import android.os.Looper;
 import android.util.LruCache;
 import android.widget.ImageView;
 
+import com.snapsave.app.App;
 import com.snapsave.app.engine.Http;
 
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/** Tiny async image loader (thumbnail previews) with a memory cache. No third-party deps. */
+/**
+ * Tiny async image loader with memory + disk caching and downsampling. No third-party deps.
+ * Thumbnails are decoded near {@link #TARGET_PX} instead of full size so a long feed does not
+ * allocate multi-megabyte bitmaps and stutter while scrolling.
+ */
 public final class ImageLoader {
 
-    private static final LruCache<String, Bitmap> CACHE = new LruCache<String, Bitmap>(12 * 1024 * 1024) {
+    private static final int TARGET_PX = 512;
+    private static final int MAX_DISK_BYTES = 8 * 1024 * 1024;
+    private static final long DISK_LIMIT = 32L * 1024 * 1024;
+    private static final LruCache<String, Bitmap> CACHE = new LruCache<String, Bitmap>(16 * 1024 * 1024) {
         @Override
         protected int sizeOf(String key, Bitmap value) {
             return value.getByteCount();
@@ -48,7 +62,14 @@ public final class ImageLoader {
         POOL.execute(new Runnable() {
             @Override
             public void run() {
-                final Bitmap bmp = fetch(url);
+                byte[] bytes = readDisk(url);
+                if (bytes == null) {
+                    bytes = fetchBytes(url);
+                    if (bytes != null) {
+                        writeDisk(url, bytes);
+                    }
+                }
+                final Bitmap bmp = bytes == null ? null : decode(bytes, TARGET_PX);
                 if (bmp == null) {
                     return;
                 }
@@ -65,7 +86,103 @@ public final class ImageLoader {
         });
     }
 
-    private static Bitmap fetch(String url) {
+    private static String key(String url) {
+        return Integer.toHexString(url.hashCode()) + "-" + url.length();
+    }
+
+    private static File cacheDir() {
+        File dir = new File(App.ctx().getCacheDir(), "thumbs");
+        if (!dir.exists()) {
+            dir.mkdirs();
+        }
+        return dir;
+    }
+
+    private static File diskFile(String url) {
+        return new File(cacheDir(), key(url) + ".img");
+    }
+
+    private static byte[] readDisk(String url) {
+        File file = diskFile(url);
+        if (!file.isFile() || file.length() <= 0 || file.length() > MAX_DISK_BYTES) {
+            return null;
+        }
+        try {
+            FileInputStream in = new FileInputStream(file);
+            try {
+                ByteArrayOutputStream bos = new ByteArrayOutputStream((int) file.length());
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = in.read(buf)) > 0) {
+                    bos.write(buf, 0, n);
+                }
+                file.setLastModified(System.currentTimeMillis());
+                return bos.toByteArray();
+            } finally {
+                in.close();
+            }
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static void writeDisk(String url, byte[] bytes) {
+        try {
+            File target = diskFile(url);
+            File tmp = new File(target.getAbsolutePath() + ".tmp");
+            FileOutputStream out = new FileOutputStream(tmp);
+            try {
+                out.write(bytes);
+                out.flush();
+            } finally {
+                out.close();
+            }
+            if (!tmp.renameTo(target)) {
+                target.delete();
+                if (!tmp.renameTo(target)) {
+                    tmp.delete();
+                    return;
+                }
+            }
+            trim();
+        } catch (Exception ignored) {
+        }
+    }
+
+    /** Bounded disk cache: delete the oldest entries when the thumbnail directory grows. */
+    private static void trim() {
+        File[] files = cacheDir().listFiles();
+        if (files == null) {
+            return;
+        }
+        long total = 0;
+        for (File f : files) {
+            if (f.isFile()) {
+                total += f.length();
+            }
+        }
+        if (total <= DISK_LIMIT) {
+            return;
+        }
+        Arrays.sort(files, new Comparator<File>() {
+            @Override
+            public int compare(File a, File b) {
+                return Long.compare(a.lastModified(), b.lastModified());
+            }
+        });
+        long target = DISK_LIMIT * 3 / 4;
+        for (File f : files) {
+            if (total <= target) {
+                break;
+            }
+            if (f.isFile()) {
+                total -= f.length();
+                f.delete();
+            }
+        }
+    }
+
+    private static byte[] fetchBytes(String url) {
         HttpURLConnection c = null;
         try {
             c = (HttpURLConnection) new URL(url).openConnection();
@@ -78,15 +195,45 @@ public final class ImageLoader {
                 return null;
             }
             InputStream in = c.getInputStream();
-            Bitmap b = BitmapFactory.decodeStream(in);
-            in.close();
-            return b;
+            try {
+                ByteArrayOutputStream bos = new ByteArrayOutputStream();
+                byte[] buf = new byte[16384];
+                int n;
+                while ((n = in.read(buf)) > 0) {
+                    bos.write(buf, 0, n);
+                    if (bos.size() > MAX_DISK_BYTES) {
+                        return null;
+                    }
+                }
+                return bos.toByteArray();
+            } finally {
+                in.close();
+            }
         } catch (Throwable t) {
             return null;
         } finally {
             if (c != null) {
                 c.disconnect();
             }
+        }
+    }
+
+    private static Bitmap decode(byte[] bytes, int target) {
+        try {
+            BitmapFactory.Options bounds = new BitmapFactory.Options();
+            bounds.inJustDecodeBounds = true;
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.length, bounds);
+            int max = Math.max(bounds.outWidth, bounds.outHeight);
+            int sample = 1;
+            while (max / sample > target * 2) {
+                sample *= 2;
+            }
+            BitmapFactory.Options options = new BitmapFactory.Options();
+            options.inSampleSize = sample;
+            options.inPreferredConfig = Bitmap.Config.RGB_565;
+            return BitmapFactory.decodeByteArray(bytes, 0, bytes.length, options);
+        } catch (Throwable t) {
+            return null;
         }
     }
 }

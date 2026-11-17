@@ -17,6 +17,7 @@ import java.util.Arrays;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.KeyManagerFactory;
@@ -29,6 +30,16 @@ public final class HostRegression {
     private static int passed;
     private static final byte[] PARTIAL = "old partial bytes".getBytes(StandardCharsets.UTF_8);
     private static final byte[] MEDIA = "0123456789-host-media".getBytes(StandardCharsets.UTF_8);
+    /** Larger than the 1 MiB segmented threshold so the parallel path is really exercised. */
+    private static final byte[] BIG = bigPayload(2 * 1024 * 1024 + 12345);
+
+    private static byte[] bigPayload(int length) {
+        byte[] bytes = new byte[length];
+        for (int i = 0; i < length; i++) {
+            bytes[i] = (byte) ((i * 31 + (i >>> 7)) & 0xFF);
+        }
+        return bytes;
+    }
 
     private interface Case { void run() throws Exception; }
 
@@ -271,6 +282,31 @@ public final class HostRegression {
                     }
                 }
             });
+            run("segmented download uses parallel byte ranges and produces exact bytes", new Case() {
+                public void run() throws Exception {
+                    File out = new File(work, "segmented-" + System.nanoTime() + ".bin");
+                    final long[] progress = {-1, -1};
+                    Http.download(fixture.url("/multi"), out, null, null, new Http.Progress() {
+                        public void onProgress(long done, long total) { progress[0] = done; progress[1] = total; }
+                    }, new Http.CancelToken(), 4);
+                    check(Arrays.equals(BIG, Files.readAllBytes(out.toPath())),
+                            "segmented output must match the source byte for byte");
+                    check(progress[0] == BIG.length && progress[1] == BIG.length,
+                            "segmented progress must end at the advertised total");
+                    check(fixture.rangedRequests.get() >= 3,
+                            "a four-connection transfer must request several non-zero ranges");
+                    check(!new File(out.getAbsolutePath() + ".segmeta").exists(),
+                            "segment plan must be cleaned after concatenation");
+                }
+            });
+            run("segmented download falls back when a server ignores Range", new Case() {
+                public void run() throws Exception {
+                    File out = new File(work, "fallback-" + System.nanoTime() + ".bin");
+                    Http.download(fixture.url("/ignore"), out, null, null, null, new Http.CancelToken(), 4);
+                    check(Arrays.equals(MEDIA, Files.readAllBytes(out.toPath())),
+                            "range-less server must still produce the exact single-stream file");
+                }
+            });
         }
         System.out.println("PASS: " + passed + " host regression cases (real production sources; no Android runtime)");
     }
@@ -344,6 +380,7 @@ public final class HostRegression {
         final HttpsServer server;
         final ExecutorService threads;
         final AtomicReference<String> range = new AtomicReference<String>();
+        final AtomicInteger rangedRequests = new AtomicInteger();
         final javax.net.ssl.SSLSocketFactory previousFactory;
 
         TlsFixture(File identity) throws Exception {
@@ -379,6 +416,31 @@ public final class HostRegression {
             server.createContext("/complete", exchange -> {
                 exchange.getResponseHeaders().set("Content-Range", "bytes */" + MEDIA.length);
                 respond(exchange, 416, null);
+            });
+            server.createContext("/multi", exchange -> {
+                String header = exchange.getRequestHeaders().getFirst("Range");
+                long start = 0;
+                if (header != null && header.startsWith("bytes=")) {
+                    String spec = header.substring(6).trim();
+                    int dash = spec.indexOf('-');
+                    if (dash > 0) {
+                        try {
+                            start = Long.parseLong(spec.substring(0, dash));
+                        } catch (NumberFormatException ignored) {
+                        }
+                    }
+                }
+                if (start > 0) {
+                    rangedRequests.incrementAndGet();
+                }
+                if (start >= BIG.length) {
+                    respond(exchange, 416, null);
+                    return;
+                }
+                int from = (int) start;
+                exchange.getResponseHeaders().set("Content-Range",
+                        "bytes " + from + "-" + (BIG.length - 1) + "/" + BIG.length);
+                respond(exchange, 206, Arrays.copyOfRange(BIG, from, BIG.length));
             });
             server.start();
         }

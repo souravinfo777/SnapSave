@@ -63,8 +63,8 @@ public final class TaskRefresh {
         // Without an entity validator a newly signed URL does not prove byte identity.
         // Start this part again even if quality/itag matches to avoid corrupting a resume.
         if (!url.equals(part.url)) {
-            if (part.temp != null && part.temp.exists() && !part.temp.delete()) {
-                throw new java.io.IOException("could_not_reset_partial");
+            if (part.temp != null) {
+                Http.deletePartial(part.temp);
             }
             part.done = 0;
             part.total = 0;

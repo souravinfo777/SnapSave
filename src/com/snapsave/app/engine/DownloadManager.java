@@ -13,6 +13,8 @@ import android.util.Log;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import com.snapsave.app.util.Prefs;
+
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -37,9 +39,15 @@ public class DownloadManager {
     private final File dir;
     private final List<DownloadTask> tasks = new CopyOnWriteArrayList<DownloadTask>();
     private final List<Listener> listeners = new CopyOnWriteArrayList<Listener>();
-    /** Three downloads run at once; anything beyond that waits in the queue and starts
-     *  automatically as soon as a slot frees up. */
-    private final ExecutorService pool = Executors.newFixedThreadPool(3);
+    /**
+     * Worker threads are cheap; the actual transfer limit is enforced by
+     * {@link #activeWorkers}. Users can raise or lower it in Settings without
+     * rebuilding the executor.
+     */
+    private static final int MAX_WORKERS = 8;
+    private final ExecutorService pool = Executors.newFixedThreadPool(MAX_WORKERS);
+    /** Number of workers currently allowed to transfer, guarded by this manager's monitor. */
+    private int activeWorkers;
     private final Handler main = new Handler(Looper.getMainLooper());
     /** State changes and file publication use this manager's monitor; native calls never hold it. */
     /** Kept for the lifetime of this application-scoped manager. */
@@ -270,10 +278,36 @@ public class DownloadManager {
         notifyChanged();
     }
 
+    /**
+     * Blocks a worker until the user-selected number of simultaneous transfers allows it.
+     * Wi-Fi and mobile data use the same limit; the network policy decides whether data is
+     * allowed at all. Waiting threads are woken when a transfer finishes or the setting changes.
+     */
+    private void acquireWorkerSlot(DownloadTask task, Http.CancelToken token) throws Http.Cancelled {
+        synchronized (this) {
+            while (!task.removed && !token.stopped()
+                    && activeWorkers >= Prefs.simultaneousDownloads()) {
+                try {
+                    wait(400);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new Http.Cancelled();
+                }
+            }
+            if (task.removed || token.stopped()) {
+                throw new Http.Cancelled();
+            }
+            activeWorkers++;
+        }
+    }
+
     private void runTask(final DownloadTask task, final Http.CancelToken token) {
         final int nid = Notifier.idFor(task.id);
         File staging = stagingFile(task);
+        boolean slotAcquired = false;
         try {
+            acquireWorkerSlot(task, token);
+            slotAcquired = true;
             transition(task, token, DownloadTask.State.DOWNLOADING);
             Notifier.progress(ctx, nid, task.title, task.percent());
             boolean refreshed = false;
@@ -312,7 +346,7 @@ public class DownloadManager {
                 task.speed = 0;
                 task.error = null;
                 for (DownloadTask.Part part : task.parts) {
-                    if (part.temp != null) part.temp.delete();
+                    Http.deletePartial(part.temp);
                 }
                 Notifier.done(ctx, nid, task.title, task.outFile.getName(), task.warning);
             }
@@ -337,6 +371,10 @@ public class DownloadManager {
             }
         } finally {
             synchronized (this) {
+                if (slotAcquired) {
+                    activeWorkers = Math.max(0, activeWorkers - 1);
+                    notifyAll();          // wake a queued worker waiting for a transfer slot
+                }
                 // Native processing has returned before this ownership flag can be released.
                 staging.delete();
                 task.workerScheduled = false;
@@ -358,45 +396,128 @@ public class DownloadManager {
             throws Exception {
         final long[] win = {System.currentTimeMillis(), task.done()};
         final long[] lastUi = {0L};
-        for (int index = 0; index < task.parts.size(); index++) {
+        final int count = task.parts.size();
+        final Http.CancelToken[] partTokens = new Http.CancelToken[count];
+        final int budget = Math.max(1, Prefs.downloadConnections());
+        int runnable = 0;
+        for (int i = 0; i < count; i++) {
             checkCancelled(task, token);
-            final DownloadTask.Part part = task.parts.get(index);
+            DownloadTask.Part part = task.parts.get(i);
             if (part.url == null || part.url.isEmpty()) throw new IOException("link_expired");
-            if (part.temp == null) part.temp = new File(dir, task.id + "_part" + index + ".tmp");
+            if (part.temp == null) part.temp = new File(dir, task.id + "_part" + i + ".tmp");
             if (part.total > 0 && part.temp.exists() && part.temp.length() == part.total) {
                 part.done = part.total;
                 continue;
             }
-            part.done = part.temp.exists() ? part.temp.length() : 0;
-            Http.download(part.url, part.temp, part.referer, part.ua == null ? Http.UA : part.ua,
-                    new Http.Progress() {
-                @Override public void onProgress(long done, long total) {
-                    synchronized (DownloadManager.this) {
-                        if (task.removed || token.cancelled) return;
-                        part.done = done;
-                        if (total > 0) part.total = total;
-                        long now = System.currentTimeMillis();
-                        long dt = now - win[0];
-                        if (dt >= 1000) {
-                            task.speed = Math.max(0, task.done() - win[1]) * 1000.0 / dt;
-                            win[0] = now;
-                            win[1] = task.done();
-                            Notifier.progress(ctx, nid, task.title, task.percent());
-                            persistThrottled();
-                        }
-                        if (now - lastUi[0] >= 400) {
-                            lastUi[0] = now;
-                            notifyChanged();
+            // Segment files count as progress too; otherwise a resumed file would show 0%.
+            part.done = Http.partialBytes(part.temp);
+            partTokens[i] = new Http.CancelToken();
+            partTokens[i].parent = token;
+            runnable++;
+        }
+        if (runnable == 0) {
+            return;
+        }
+        final int perPart = runnable > 1 ? Math.max(1, budget / runnable) : budget;
+        if (runnable == 1) {
+            for (int i = 0; i < count; i++) {
+                if (partTokens[i] != null) {
+                    downloadPart(task, i, partTokens[i], token, nid, win, lastUi, perPart);
+                }
+            }
+            return;
+        }
+        // Video-only and audio-only streams are independent. Fetch both at the same time
+        // instead of serialising two large transfers.
+        final Throwable[] failures = new Throwable[count];
+        List<Thread> threads = new ArrayList<Thread>();
+        for (int i = 0; i < count; i++) {
+            if (partTokens[i] == null) {
+                continue;
+            }
+            final int index = i;
+            final Http.CancelToken partToken = partTokens[i];
+            Thread thread = new Thread(new Runnable() {
+                @Override public void run() {
+                    try {
+                        downloadPart(task, index, partToken, token, nid, win, lastUi, perPart);
+                    } catch (Throwable failure) {
+                        failures[index] = failure;
+                        // Stop sibling streams so a failed part does not keep burning data.
+                        for (Http.CancelToken sibling : partTokens) {
+                            if (sibling != null) sibling.cancelled = true;
                         }
                     }
                 }
-            }, token);
-            synchronized (this) {
-                checkCancelled(task, token);
-                part.done = part.temp.length();
-                if (part.total <= 0) part.total = part.done;
-                persist();
+            }, "snapsave-part-" + i);
+            thread.setDaemon(true);
+            threads.add(thread);
+            thread.start();
+        }
+        for (int i = 0; i < threads.size(); i++) {
+            try {
+                threads.get(i).join();
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                throw new Http.Cancelled();
             }
+        }
+        checkCancelled(task, token);
+        Throwable primary = null;
+        for (int i = 0; i < count; i++) {
+            if (failures[i] != null && !(failures[i] instanceof Http.Cancelled)) {
+                primary = failures[i];
+                break;
+            }
+        }
+        if (primary == null) {
+            for (int i = 0; i < count; i++) {
+                if (failures[i] != null) {
+                    primary = failures[i];
+                    break;
+                }
+            }
+        }
+        if (primary != null) {
+            if (primary instanceof Exception) throw (Exception) primary;
+            if (primary instanceof Error) throw (Error) primary;
+            throw new IOException(primary);
+        }
+    }
+
+    private void downloadPart(final DownloadTask task, final int index,
+                              final Http.CancelToken partToken, final Http.CancelToken taskToken,
+                              final int nid, final long[] win, final long[] lastUi,
+                              int connections) throws Exception {
+        final DownloadTask.Part part = task.parts.get(index);
+        Http.download(part.url, part.temp, part.referer, part.ua == null ? Http.UA : part.ua,
+                new Http.Progress() {
+            @Override public void onProgress(long done, long total) {
+                synchronized (DownloadManager.this) {
+                    if (task.removed || taskToken.stopped() || partToken.stopped()) return;
+                    part.done = done;
+                    if (total > 0) part.total = total;
+                    long now = System.currentTimeMillis();
+                    long dt = now - win[0];
+                    if (dt >= 1000) {
+                        task.speed = Math.max(0, task.done() - win[1]) * 1000.0 / dt;
+                        win[0] = now;
+                        win[1] = task.done();
+                        Notifier.progress(ctx, nid, task.title, task.percent());
+                        persistThrottled();
+                    }
+                    if (now - lastUi[0] >= 400) {
+                        lastUi[0] = now;
+                        notifyChanged();
+                    }
+                }
+            }
+        }, partToken, connections);
+        synchronized (this) {
+            checkCancelled(task, taskToken);
+            part.done = part.temp.length();
+            if (part.total <= 0) part.total = part.done;
+            persist();
         }
     }
 
@@ -632,11 +753,69 @@ public class DownloadManager {
         DownloadService.refresh(ctx);
     }
 
+    /** Renames a completed file inside the app folder and updates the persisted record. */
+    public synchronized boolean rename(DownloadTask task, String newName) {
+        if (task == null || task.outFile == null || !task.outFile.exists()) {
+            return false;
+        }
+        String oldName = task.outFile.getName();
+        int dot = oldName.lastIndexOf('.');
+        String extension = dot > 0 ? oldName.substring(dot) : "";
+        String cleaned = newName == null ? "" : newName.trim()
+                .replace('/', '_').replace('\\', '_').replace(':', '_')
+                .replace('*', '_').replace('?', '_').replace('"', '_')
+                .replace('<', '_').replace('>', '_').replace('|', '_');
+        if (cleaned.isEmpty()) {
+            return false;
+        }
+        if (!extension.isEmpty()
+                && !cleaned.toLowerCase(java.util.Locale.US)
+                .endsWith(extension.toLowerCase(java.util.Locale.US))) {
+            cleaned += extension;
+        }
+        if (cleaned.equals(oldName)) {
+            return true;
+        }
+        File destination = unique(new File(dir, cleaned));
+        if (!task.outFile.renameTo(destination)) {
+            return false;
+        }
+        task.outFile = destination;
+        task.outName = destination.getName();
+        persist();
+        notifyChanged();
+        return true;
+    }
+
     private void deleteFiles(DownloadTask task) {
         if (task.outFile != null) task.outFile.delete();
         stagingFile(task).delete();
         for (DownloadTask.Part part : task.parts) {
-            if (part.temp != null) part.temp.delete();
+            Http.deletePartial(part.temp);
+        }
+    }
+
+    /** Wake workers waiting for a transfer slot after the user changes the limit. */
+    public synchronized void wakeQueue() {
+        notifyAll();
+    }
+
+    /** Removes completed records and their files (Settings -> Stored on this device). */
+    public synchronized void deleteAllCompleted() {
+        List<DownloadTask> finished = new ArrayList<DownloadTask>();
+        for (DownloadTask task : tasks) {
+            if (task.state == DownloadTask.State.COMPLETED) {
+                finished.add(task);
+            }
+        }
+        for (DownloadTask task : finished) {
+            tasks.remove(task);
+            deleteFiles(task);
+        }
+        if (!finished.isEmpty()) {
+            persist();
+            notifyChanged();
+            DownloadService.refresh(ctx);
         }
     }
 
@@ -940,7 +1119,7 @@ public class DownloadManager {
             p.temp = temp.isEmpty() ? new File(dir, t.id + "_part" + i + ".tmp") : new File(temp);
             // The file on disk is authoritative: a stale `done` would show a false percentage,
             // and a temp that vanished (cache wipe, user cleanup) must restart from zero.
-            long actual = p.temp.exists() ? p.temp.length() : 0;
+            long actual = Http.partialBytes(p.temp);
             p.done = actual;
             t.parts.add(p);
         }

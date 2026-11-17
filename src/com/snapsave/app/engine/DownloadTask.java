@@ -60,6 +60,8 @@ public class DownloadTask {
     public long completedAt;
 
     public File outFile;
+    /** Last public MediaStore URI produced by an export, when the process still remembers it. */
+    public transient String exportedUri;
     public transient Http.CancelToken cancelToken = new Http.CancelToken();
 
     /** Set by {@link DownloadManager#remove}: the worker must stop and delete nothing else. */

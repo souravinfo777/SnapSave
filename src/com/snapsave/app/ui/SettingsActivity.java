@@ -2,8 +2,12 @@ package com.snapsave.app.ui;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
+import android.os.Build;
 import android.os.Bundle;
 import android.text.InputType;
 import android.view.Gravity;
@@ -16,6 +20,7 @@ import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import com.snapsave.app.App;
 import com.snapsave.app.R;
@@ -23,6 +28,7 @@ import com.snapsave.app.engine.NativeStreams;
 import com.snapsave.app.util.Insets;
 import com.snapsave.app.util.Prefs;
 
+import java.io.File;
 import java.util.Locale;
 
 public class SettingsActivity extends Activity {
@@ -65,10 +71,11 @@ public class SettingsActivity extends Activity {
         }
 
         final String folder = App.get().downloads().dir().getAbsolutePath();
-        actionable(add(R.drawable.ic_folder, "Download folder", folder, ""), new Action() {
+        actionable(add(R.drawable.ic_folder, "Download folder", "App-private storage; export from My Files to share",
+                shortPath(folder)), new Action() {
             @Override
             public void run() {
-                info("Download folder", "Downloads are stored in this app's download folder:\n\n" + folder);
+                showDownloadFolder(folder);
             }
         });
         actionable(add(R.drawable.ic_tune, "Video quality", "Preferred maximum height for new downloads",
@@ -98,12 +105,28 @@ public class SettingsActivity extends Activity {
                 chooseWifiOnly();
             }
         });
+        actionable(add(R.drawable.ic_download, "Simultaneous downloads",
+                "Transfers running at once on Wi-Fi or mobile data",
+                Prefs.simultaneousDownloads() + " at once"), new Action() {
+            @Override
+            public void run() {
+                chooseSimultaneous();
+            }
+        });
+        actionable(add(R.drawable.ic_tune, "Connections per download",
+                "Parallel range connections for faster single-file speed",
+                Prefs.downloadConnections() == 1 ? "Single" : Prefs.downloadConnections() + " connections"),
+                new Action() {
+                    @Override
+                    public void run() {
+                        chooseConnections();
+                    }
+                });
         actionable(add(R.drawable.ic_settings, "Native media engine", "SnapTube FFmpeg / M4A engine",
                 nativeOk ? "Loaded" : "Unavailable"), new Action() {
             @Override
             public void run() {
-                info("Native media engine", "Conversion depends on the native media engine and the available source format. "
-                        + "Your preferred output may be unavailable for some downloads.");
+                showNativeEngine(nativeOk);
             }
         });
         actionable(add(R.drawable.ic_link, "Resolver server", "Optional HTTPS endpoint; changing origin clears its token",
@@ -142,11 +165,17 @@ public class SettingsActivity extends Activity {
                 openNotificationSettings();
             }
         });
-        add(R.drawable.ic_person, "Stored on this device", "Account sign-in and cloud sync are not available", "Local only");
+        actionable(add(R.drawable.ic_person, "Stored on this device", "Downloaded files and history on this device", storageValue()),
+                new Action() {
+                    @Override
+                    public void run() {
+                        showStorage();
+                    }
+                });
         actionable(add(R.drawable.ic_check, "About SnapSave", getString(R.string.version_line), ""), new Action() {
             @Override
             public void run() {
-                info("About SnapSave", getString(R.string.version_line));
+                showAbout();
             }
         });
     }
@@ -220,6 +249,174 @@ public class SettingsActivity extends Activity {
                                 });
                             }
                         }).setNegativeButton("Cancel", null).show();
+    }
+
+    private void chooseSimultaneous() {
+        final int[] values = {1, 2, 3, 4, 6, 8};
+        String[] labels = new String[values.length];
+        for (int i = 0; i < values.length; i++) {
+            labels[i] = values[i] + (values[i] == 1 ? " download at a time" : " downloads at a time");
+        }
+        new AlertDialog.Builder(this).setTitle("Simultaneous downloads")
+                .setSingleChoiceItems(labels, indexOf(values, Prefs.simultaneousDownloads()),
+                        new DialogInterface.OnClickListener() {
+                            @Override
+                            public void onClick(DialogInterface d, final int which) {
+                                saveChoice(d, new Action() {
+                                    @Override
+                                    public void run() {
+                                        Prefs.setSimultaneousDownloads(values[which]);
+                                        App.get().downloads().wakeQueue();
+                                    }
+                                });
+                            }
+                        }).setNegativeButton("Cancel", null).show();
+    }
+
+    private void chooseConnections() {
+        final int[] values = {1, 2, 3, 4, 6, 8};
+        String[] labels = new String[values.length];
+        for (int i = 0; i < values.length; i++) {
+            labels[i] = values[i] == 1 ? "1 — single stream"
+                    : values[i] + " — parallel range streams";
+        }
+        new AlertDialog.Builder(this).setTitle("Connections per download")
+                .setSingleChoiceItems(labels, indexOf(values, Prefs.downloadConnections()),
+                        new DialogInterface.OnClickListener() {
+                            @Override
+                            public void onClick(DialogInterface d, final int which) {
+                                saveChoice(d, new Action() {
+                                    @Override
+                                    public void run() {
+                                        Prefs.setDownloadConnections(values[which]);
+                                    }
+                                });
+                            }
+                        }).setNegativeButton("Cancel", null).show();
+    }
+
+    private void showDownloadFolder(final String folder) {
+        new AlertDialog.Builder(this).setTitle("Download folder")
+                .setMessage("Finished downloads are stored in this app's private folder:\n\n" + folder
+                        + "\n\nGallery and Music apps cannot open this folder directly. "
+                        + "Use Share or the Gallery/Music export action in My Files to copy a finished file.")
+                .setPositiveButton("Copy path", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface d, int which) {
+                        ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                        if (cm != null) {
+                            cm.setPrimaryClip(ClipData.newPlainText("SnapSave download folder", folder));
+                            Toast.makeText(SettingsActivity.this, "Folder path copied", Toast.LENGTH_SHORT).show();
+                        }
+                    }
+                }).setNegativeButton("Close", null).show();
+    }
+
+    private void showNativeEngine(boolean nativeOk) {
+        boolean mux = false;
+        boolean mp3 = false;
+        try {
+            mux = NativeStreams.canMux();
+        } catch (Throwable ignored) {
+        }
+        try {
+            mp3 = NativeStreams.canMp3();
+        } catch (Throwable ignored) {
+        }
+        String message = "Libraries loaded: " + (nativeOk ? "yes" : "no")
+                + "\nVideo + audio muxing: " + (mux ? "ready" : "unavailable")
+                + "\nM4A to MP3 conversion: " + (mp3 ? "ready" : "unavailable")
+                + "\n\nConversion depends on the native engine and the source format. "
+                + "If the engine is unavailable, downloads keep their original container.";
+        new AlertDialog.Builder(this).setTitle("Native media engine").setMessage(message)
+                .setPositiveButton("Recheck", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface d, int which) {
+                        build();
+                    }
+                }).setNegativeButton("Close", null).show();
+    }
+
+    private void showStorage() {
+        final File dir = App.get().downloads().dir();
+        final int completed = App.get().downloads().completed().size();
+        long bytes = folderBytes(dir);
+        new AlertDialog.Builder(this).setTitle("Stored on this device")
+                .setMessage(completed + " finished download" + (completed == 1 ? "" : "s")
+                        + "\n" + humanBytes(bytes) + " used in the app folder"
+                        + "\n\nAccount sign-in and cloud sync are not available.")
+                .setPositiveButton("Delete all files", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface d, int which) {
+                        confirmDeleteAll();
+                    }
+                }).setNegativeButton("Close", null).show();
+    }
+
+    private void confirmDeleteAll() {
+        new AlertDialog.Builder(this).setTitle("Delete all downloaded files?")
+                .setMessage("This removes every completed file from the app folder. It cannot be undone.")
+                .setPositiveButton("Delete", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface d, int which) {
+                        App.get().downloads().deleteAllCompleted();
+                        Toast.makeText(SettingsActivity.this, "Downloaded files deleted",
+                                Toast.LENGTH_SHORT).show();
+                        build();
+                    }
+                }).setNegativeButton("Cancel", null).show();
+    }
+
+    private void showAbout() {
+        String abi = Build.SUPPORTED_ABIS != null && Build.SUPPORTED_ABIS.length > 0
+                ? Build.SUPPORTED_ABIS[0] : "unknown";
+        String message = getString(R.string.version_line)
+                + "\nPackage: " + getPackageName()
+                + "\nAndroid API: " + Build.VERSION.SDK_INT
+                + "\nPrimary ABI: " + abi
+                + "\n\nSnapSave saves media you are authorized to download. "
+                + "Provider availability and DRM-protected streams are not guaranteed.";
+        new AlertDialog.Builder(this).setTitle("About SnapSave").setMessage(message)
+                .setPositiveButton("OK", null).show();
+    }
+
+    private String storageValue() {
+        int n = App.get().downloads().completed().size();
+        return n + " file" + (n == 1 ? "" : "s");
+    }
+
+    private static String shortPath(String path) {
+        if (path == null) {
+            return "";
+        }
+        int cut = path.lastIndexOf("SnapSave");
+        return cut > 0 ? "..." + path.substring(cut) : path;
+    }
+
+    private static long folderBytes(File dir) {
+        long total = 0;
+        File[] files = dir == null ? null : dir.listFiles();
+        if (files != null) {
+            for (File f : files) {
+                if (f.isFile()) {
+                    total += f.length();
+                }
+            }
+        }
+        return total;
+    }
+
+    private static String humanBytes(long bytes) {
+        if (bytes >= 1024L * 1024L * 1024L) {
+            return String.format(Locale.US, "%.2f GB", bytes / (1024.0 * 1024 * 1024));
+        }
+        if (bytes >= 1024L * 1024L) {
+            return String.format(Locale.US, "%.1f MB", bytes / (1024.0 * 1024));
+        }
+        if (bytes >= 1024L) {
+            return String.format(Locale.US, "%.1f KB", bytes / 1024.0);
+        }
+        return bytes + " B";
     }
 
     private static int indexOf(int[] values, int value) {

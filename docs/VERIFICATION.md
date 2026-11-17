@@ -1,5 +1,35 @@
 # Verification record
 
+## 2026-11-17 — version 1.10 (code 11)
+
+Build host: Windows, Microsoft OpenJDK 17.0.20.1, Android SDK discovered at `D:/android-sdk`
+(build-tools 35.0.0, platform android-35). Target API remains 35, minimum API 21; the build
+output is `SnapSave.apk`.
+
+Completed checks in this work:
+
+- **17/17 host regression cases passed.** Two new cases use a 2 MiB HTTPS fixture: a
+  four-connection segmented transfer must reproduce the source byte for byte (and request
+  several non-zero ranges), and a server returning `200` for `Range` must fall back to the
+  single-stream path.
+- APK badging: version `1.10`, version code `11`; **2,705,627 bytes**; SHA-256
+  `ec098e3e91e37738063470f7d5016ddbb6b69c352c9b6db75268ab4200f89340`.
+- APK signature v1/v2/v3 verified; 16 KiB ZIP alignment passed; credential-entry scan passed;
+  `dataSync` and `mediaPlayback` foreground services declared private.
+- Added since 1.9: parallel segmented downloads with independent resume, parallel adaptive
+  video/audio parts, configurable simultaneous download and per-file connection limits,
+  MediaStore export (API 29+) and legacy public export (API 21–28), share/open/rename/delete
+  actions, local video/album-art thumbnails, background music playback service with
+  notification controls and audio focus, Bengali resources, and list/image performance work.
+
+Not verified: device-runtime behaviour of segmented transfer, MediaStore export on API 29+,
+legacy storage permission flow, notification/media playback controls, and native mux/convert
+output. Use a physical ARM device; these host checks do not certify runtime compatibility.
+
+---
+
+## 2026-11-16 — version 1.9 (code 10)
+
 Date: 2026-11-16. This record separates completed host/build checks from pending Android runtime checks. It is not a device compatibility certification.
 
 ## Toolchain

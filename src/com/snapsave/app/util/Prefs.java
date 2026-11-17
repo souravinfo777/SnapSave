@@ -207,6 +207,34 @@ public final class Prefs {
         save(requirePreferences().edit().putBoolean("wifiOnly", value));
     }
 
+    /** Parallel HTTP range connections for one media part; 1 disables segmented downloading. */
+    public static int downloadConnections() {
+        SharedPreferences s = sp();
+        int value = s == null ? 4 : s.getInt("downloadConnections", 4);
+        return value >= 1 && value <= 8 ? value : 4;
+    }
+
+    public static void setDownloadConnections(int value) {
+        if (value < 1 || value > 8) {
+            throw new IllegalStateException("Choose between 1 and 8 download connections.");
+        }
+        save(requirePreferences().edit().putInt("downloadConnections", value));
+    }
+
+    /** How many downloads may transfer at the same time on Wi-Fi or mobile data. */
+    public static int simultaneousDownloads() {
+        SharedPreferences s = sp();
+        int value = s == null ? 3 : s.getInt("simultaneousDownloads", 3);
+        return value >= 1 && value <= 8 ? value : 3;
+    }
+
+    public static void setSimultaneousDownloads(int value) {
+        if (value < 1 || value > 8) {
+            throw new IllegalStateException("Choose between 1 and 8 simultaneous downloads.");
+        }
+        save(requirePreferences().edit().putInt("simultaneousDownloads", value));
+    }
+
     /** Preferred maximum video height in pixels; 0 means best available. */
     public static int videoQuality() {
         SharedPreferences s = sp();

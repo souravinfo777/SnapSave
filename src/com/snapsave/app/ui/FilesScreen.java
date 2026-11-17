@@ -1,22 +1,34 @@
 package com.snapsave.app.ui;
 
+import android.app.AlertDialog;
+import android.content.DialogInterface;
 import android.content.Intent;
+import android.net.Uri;
+import android.os.Build;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import com.snapsave.app.App;
 import com.snapsave.app.R;
 import com.snapsave.app.engine.DownloadManager;
 import com.snapsave.app.engine.DownloadTask;
 import com.snapsave.app.engine.MediaTypes;
+import com.snapsave.app.util.LocalThumb;
+import com.snapsave.app.util.MediaExporter;
 import com.snapsave.app.util.Util;
 
+import java.util.ArrayList;
 import java.util.List;
 
 public class FilesScreen extends Screen {
+
+    private static final int REQUEST_STORAGE = 1003;
 
     private final DownloadManager dm;
     private LinearLayout container;
@@ -26,6 +38,8 @@ public class FilesScreen extends Screen {
 
     /** 0 = video, 1 = audio, 2 = all */
     private int filter = 0;
+    /** Completed files do not change during a transfer; skip needless re-inflation. */
+    private String lastSignature = "";
 
     public FilesScreen(MainActivity act) {
         super(act, R.layout.fragment_files);
@@ -97,8 +111,19 @@ public class FilesScreen extends Screen {
         if (destroyed) {
             return;
         }
-        container.removeAllViews();
         List<DownloadTask> done = dm.completed();
+        StringBuilder signature = new StringBuilder().append(filter);
+        for (DownloadTask t : done) {
+            signature.append('|').append(t.id).append(':').append(t.completedAt).append(':')
+                    .append(t.outFile == null ? 0 : t.outFile.length()).append(':')
+                    .append(t.outFile == null ? "" : t.outFile.getName());
+        }
+        if (signature.toString().equals(lastSignature)) {
+            return;
+        }
+        lastSignature = signature.toString();
+
+        container.removeAllViews();
         int shown = 0;
         for (final DownloadTask t : done) {
             String mediaType = MediaTypes.mediaType(t);
@@ -111,21 +136,40 @@ public class FilesScreen extends Screen {
                 continue;
             }
             View row = LayoutInflater.from(act).inflate(R.layout.item_video, container, false);
-            ((View) row.findViewById(R.id.thumb_bg)).setBackgroundResource(Util.grad(t.grad));
+            ImageView thumb = (ImageView) row.findViewById(R.id.thumb_bg);
+            if (audio || video || MediaTypes.IMAGE.equals(mediaType)) {
+                LocalThumb.load(thumb, t.outFile, mediaType, Util.grad(t.grad));
+            } else {
+                thumb.setBackgroundResource(Util.grad(t.grad));
+            }
             if (MediaTypes.IMAGE.equals(mediaType)) {
                 row.findViewById(R.id.thumb_duration).setVisibility(View.GONE);
-                row.findViewById(R.id.video_action_icon).setVisibility(View.GONE);
             }
             ((TextView) row.findViewById(R.id.thumb_duration)).setText(t.label);
             ((TextView) row.findViewById(R.id.video_title)).setText(t.title);
             ((TextView) row.findViewById(R.id.video_meta)).setText(
                     (t.author == null || t.author.isEmpty() ? "" : t.author + " • ")
                             + Util.bytes(t.outFile != null ? t.outFile.length() : 0));
-            row.findViewById(R.id.video_action_icon).setVisibility(View.GONE);
+            ImageView actionIcon = (ImageView) row.findViewById(R.id.video_action_icon);
+            actionIcon.setImageResource(R.drawable.ic_more);
+            actionIcon.setVisibility(View.VISIBLE);
+            row.findViewById(R.id.video_action).setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    showActions(t);
+                }
+            });
             row.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
                     open(t);
+                }
+            });
+            row.setOnLongClickListener(new View.OnLongClickListener() {
+                @Override
+                public boolean onLongClick(View v) {
+                    showActions(t);
+                    return true;
                 }
             });
             container.addView(row);
@@ -141,21 +185,55 @@ public class FilesScreen extends Screen {
         }
     }
 
+    private void showActions(final DownloadTask t) {
+        final String type = MediaTypes.mediaType(t);
+        final boolean audio = MediaTypes.AUDIO.equals(type);
+        final boolean image = MediaTypes.IMAGE.equals(type);
+        final boolean playable = audio || MediaTypes.VIDEO.equals(type);
+        final List<String> items = new ArrayList<String>();
+        if (playable) {
+            items.add("Play");
+        }
+        items.add("Share");
+        items.add("Export to " + (audio ? "Music" : image ? "Pictures" : "Gallery"));
+        items.add("Open with another app");
+        items.add("Rename");
+        items.add("Delete");
+        new AlertDialog.Builder(act)
+                .setTitle(t.title == null || t.title.isEmpty() ? "File" : t.title)
+                .setItems(items.toArray(new String[items.size()]), new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int which) {
+                        String label = items.get(which);
+                        if ("Play".equals(label)) {
+                            open(t);
+                        } else if ("Share".equals(label)) {
+                            share(t);
+                        } else if (label.startsWith("Export")) {
+                            export(t, false);
+                        } else if ("Open with another app".equals(label)) {
+                            export(t, true);
+                        } else if ("Rename".equals(label)) {
+                            rename(t);
+                        } else if ("Delete".equals(label)) {
+                            confirmDelete(t);
+                        }
+                    }
+                }).show();
+    }
+
     private void open(DownloadTask t) {
         if (t.outFile == null || !t.outFile.exists()) {
-            android.widget.Toast.makeText(act, "This file is no longer available.",
-                    android.widget.Toast.LENGTH_SHORT).show();
+            toast("This file is no longer available.");
             return;
         }
         String mediaType = MediaTypes.mediaType(t);
         if (MediaTypes.IMAGE.equals(mediaType)) {
-            android.widget.Toast.makeText(act, "Image opening is not supported here yet.",
-                    android.widget.Toast.LENGTH_SHORT).show();
+            export(t, true);
             return;
         }
         if (!MediaTypes.AUDIO.equals(mediaType) && !MediaTypes.VIDEO.equals(mediaType)) {
-            android.widget.Toast.makeText(act, "This file type cannot be opened here.",
-                    android.widget.Toast.LENGTH_SHORT).show();
+            toast("This file type cannot be opened here.");
             return;
         }
         boolean audio = MediaTypes.AUDIO.equals(mediaType);
@@ -167,5 +245,85 @@ public class FilesScreen extends Screen {
         i.putExtra("mimeType", t.mimeType);
         i.putExtra("mediaType", mediaType);
         act.startActivity(i);
+    }
+
+    private void share(final DownloadTask t) {
+        final Uri uri = exportNow(t);
+        if (uri == null) {
+            return;
+        }
+        Intent send = new Intent(Intent.ACTION_SEND);
+        send.setType(MediaExporter.mimeType(t));
+        send.putExtra(Intent.EXTRA_STREAM, uri);
+        send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        act.startActivity(Intent.createChooser(send, "Share file"));
+    }
+
+    private void export(final DownloadTask t, final boolean openAfter) {
+        final Uri uri = exportNow(t);
+        if (uri == null) {
+            return;
+        }
+        toast("Saved to the public SnapSave folder");
+        if (openAfter) {
+            Intent view = new Intent(Intent.ACTION_VIEW);
+            view.setDataAndType(uri, MediaExporter.mimeType(t));
+            view.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+            try {
+                act.startActivity(view);
+            } catch (Exception e) {
+                toast("No app can open this file type.");
+            }
+        }
+    }
+
+    private Uri exportNow(DownloadTask t) {
+        if (MediaExporter.needsLegacyPermission() && Build.VERSION.SDK_INT >= 23
+                && act.checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            act.requestPermissions(new String[]{android.Manifest.permission.WRITE_EXTERNAL_STORAGE},
+                    REQUEST_STORAGE);
+            toast("Allow storage access, then tap Export again.");
+            return null;
+        }
+        try {
+            return MediaExporter.export(act, t);
+        } catch (Exception e) {
+            toast(e.getMessage() == null ? "Export failed." : e.getMessage());
+            return null;
+        }
+    }
+
+    private void rename(final DownloadTask t) {
+        final EditText input = new EditText(act);
+        String name = t.outName != null ? t.outName
+                : (t.outFile != null ? t.outFile.getName() : "");
+        int dot = name.lastIndexOf('.');
+        input.setText(dot > 0 ? name.substring(0, dot) : name);
+        input.setSelection(input.getText().length());
+        new AlertDialog.Builder(act).setTitle("Rename file").setView(input)
+                .setPositiveButton("Rename", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int which) {
+                        if (!dm.rename(t, input.getText().toString())) {
+                            toast("Could not rename this file.");
+                        }
+                    }
+                }).setNegativeButton("Cancel", null).show();
+    }
+
+    private void confirmDelete(final DownloadTask t) {
+        new AlertDialog.Builder(act).setTitle("Delete file?")
+                .setMessage("This removes the file from this device. It cannot be undone.")
+                .setPositiveButton("Delete", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int which) {
+                        dm.remove(t);
+                    }
+                }).setNegativeButton("Cancel", null).show();
+    }
+
+    private void toast(String message) {
+        Toast.makeText(act, message, Toast.LENGTH_SHORT).show();
     }
 }
