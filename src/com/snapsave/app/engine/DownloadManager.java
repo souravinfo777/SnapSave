@@ -162,14 +162,7 @@ public class DownloadManager {
             task.outName = stripExt(task.title) + ("mp3".equals(task.kind) ? ".mp3"
                     : "m4a".equals(task.kind) ? ".m4a" : ".mp4");
         }
-        if (task.outFile == null) {
-            synchronized (NAME_LOCK) {
-                File f = unique(new File(dir, task.outName));
-                try { f.createNewFile(); } catch (IOException ignored) { }
-                task.outFile = f;
-                task.outName = f.getName();
-            }
-        }
+        task.outName = MediaFiles.safeName(task.outName);
         for (int i = 0; i < task.parts.size(); i++) {
             if (task.parts.get(i).temp == null) {
                 task.parts.get(i).temp = new File(dir, task.id + "_part" + i + ".tmp");
@@ -180,7 +173,7 @@ public class DownloadManager {
     /** Called only under the manager monitor. Never replace a live worker's token. */
     private void schedule(final DownloadTask task) {
         if (task.removed || task.state == DownloadTask.State.COMPLETED) return;
-        if (!NetworkPolicy.allowed(ctx)) {
+        if (!hasReadyOutput(task) && !NetworkPolicy.allowed(ctx)) {
             waitForNetwork(task);
         } else if (!DownloadService.ensure(ctx)) {
             if (task.cancelToken != null) task.cancelToken.cancelled = true;
@@ -244,7 +237,8 @@ public class DownloadManager {
         boolean changed = false;
         for (DownloadTask task : tasks) {
             if (task.removed) continue;
-            if (!allowed && task.isActive() && task.state != DownloadTask.State.WAITING_NETWORK) {
+            if (!allowed && !hasReadyOutput(task) && task.isActive()
+                    && task.state != DownloadTask.State.WAITING_NETWORK) {
                 waitForNetwork(task);
                 changed = true;
             } else if (allowed && task.waitingForNetwork
@@ -263,7 +257,7 @@ public class DownloadManager {
     private synchronized void checkCancelled(DownloadTask task, Http.CancelToken token)
             throws Http.Cancelled {
         if (task.removed || token.cancelled || task.cancelToken != token) throw new Http.Cancelled();
-        if (!NetworkPolicy.allowed(ctx)) {
+        if (!hasReadyOutput(task) && !NetworkPolicy.allowed(ctx)) {
             waitForNetwork(task);
             throw new Http.Cancelled();
         }
@@ -308,47 +302,79 @@ public class DownloadManager {
         try {
             acquireWorkerSlot(task, token);
             slotAcquired = true;
-            transition(task, token, DownloadTask.State.DOWNLOADING);
-            Notifier.progress(ctx, nid, task.title, task.percent());
-            boolean refreshed = false;
-            if (missingUrls(task)) {
-                refreshed = true;
-                if (!refreshTask(task, token)) throw new IOException("link_expired");
-            }
-            // A refreshed URL can reset earlier parts, so restart this loop, not runTask itself.
-            while (true) {
-                try {
-                    downloadParts(task, token, nid);
-                    break;
-                } catch (Exception failure) {
-                    checkCancelled(task, token);
-                    if (refreshed || !expiredStatus(failure) || !hasSourcePage(task)) throw failure;
+            if (!hasReadyOutput(task)) {
+                transition(task, token, DownloadTask.State.DOWNLOADING);
+                Notifier.progress(ctx, nid, task);
+                boolean refreshed = false;
+                if (missingUrls(task)) {
                     refreshed = true;
-                    if (!refreshTask(task, token)) throw new IOException("link_expired", failure);
+                    if (!refreshTask(task, token)) throw new IOException("link_expired");
+                }
+                while (true) {
+                    try {
+                        downloadParts(task, token, nid);
+                        break;
+                    } catch (Exception failure) {
+                        checkCancelled(task, token);
+                        if (refreshed || !expiredStatus(failure) || !hasSourcePage(task)) throw failure;
+                        refreshed = true;
+                        if (!refreshTask(task, token)) throw new IOException("link_expired", failure);
+                    }
+                }
+                checkCancelled(task, token);
+                finalizeOutput(task, token, staging);
+                validateOutput(task, staging);
+                synchronized (this) {
+                    checkCancelled(task, token);
+                    File ready = new File(dir, task.id + "_ready" + extension(task.outName));
+                    if (ready.exists() && !ready.delete()) throw new IOException("output_reset_failed");
+                    if (!staging.renameTo(ready)) throw new IOException("ready_output_failed");
+                    task.readyFile = ready;
+                    task.publishTotal = ready.length();
+                    persist();
                 }
             }
-            checkCancelled(task, token);
-            finalizeOutput(task, token, staging);
-            checkCancelled(task, token);
-            validateOutput(task, staging);
+            transition(task, token, DownloadTask.State.PUBLISHING);
+            task.publishDone = 0;
+            task.publishTotal = task.readyFile.length();
+            task.speed = 0;
+            final long[] lastUpdate = {0};
+            try {
+                MediaFiles.publish(ctx, task, task.readyFile, new MediaFiles.Progress() {
+                    @Override public void onProgress(long copied, long total) throws Exception {
+                        synchronized (DownloadManager.this) {
+                            checkCancelled(task, token);
+                            task.publishDone = copied;
+                            task.publishTotal = total;
+                            long now = android.os.SystemClock.elapsedRealtime();
+                            if (now - lastUpdate[0] >= 300 || copied == total) {
+                                lastUpdate[0] = now;
+                                Notifier.progress(ctx, nid, task);
+                                notifyChanged();
+                            }
+                        }
+                    }
+                    @Override public void checkpoint() throws Exception {
+                        synchronized (DownloadManager.this) {
+                            checkCancelled(task, token);
+                            persist();
+                        }
+                    }
+                });
+            } catch (Http.Cancelled cancelled) {
+                throw cancelled;
+            } catch (Exception failure) {
+                throw new IOException("save_failed: " + (failure.getMessage() == null
+                        ? failure.getClass().getSimpleName() : failure.getMessage()), failure);
+            }
             synchronized (this) {
-                checkCancelled(task, token);
-                // The public name is only touched after output validation. Removal and publish
-                // share the monitor, so a removed task can never publish a file afterwards.
-                if (!staging.renameTo(task.outFile)) {
-                    // Some platforms refuse replacing even the empty name reservation.
-                    if (task.outFile.exists() && task.outFile.length() == 0) task.outFile.delete();
-                    if (!staging.renameTo(task.outFile)) throw new IOException("output_publish_failed");
-                }
                 checkCancelled(task, token);
                 task.completedAt = System.currentTimeMillis();
                 task.state = DownloadTask.State.COMPLETED;
-                task.speed = 0;
                 task.error = null;
-                for (DownloadTask.Part part : task.parts) {
-                    Http.deletePartial(part.temp);
-                }
-                Notifier.done(ctx, nid, task.title, task.outFile.getName(), task.warning);
+                persist();
+                cleanupWorkingFiles(task);
+                Notifier.done(ctx, nid, task.title, "Download/SnapSave/" + task.outName, task.warning);
             }
         } catch (Throwable failure) {
             synchronized (this) {
@@ -356,26 +382,24 @@ public class DownloadManager {
                     if (failure instanceof Http.Cancelled || token.cancelled) {
                         task.state = task.waitingForNetwork ? DownloadTask.State.WAITING_NETWORK
                                 : task.restartRequested ? DownloadTask.State.QUEUED : DownloadTask.State.PAUSED;
-                    } else if (!NetworkPolicy.allowed(ctx)) {
+                    } else if (!hasReadyOutput(task) && !NetworkPolicy.allowed(ctx)) {
                         waitForNetwork(task);
                     } else {
                         Log.w(TAG, "download failed", failure);
                         task.error = failure.getMessage() == null
                                 ? failure.getClass().getSimpleName() : failure.getMessage();
                         task.state = DownloadTask.State.FAILED;
-                        if (task.outFile != null && task.outFile.length() == 0) task.outFile.delete();
                     }
                     task.speed = 0;
-                    Notifier.clearProgress(ctx, nid);
+                    Notifier.status(ctx, task);
                 }
             }
         } finally {
             synchronized (this) {
                 if (slotAcquired) {
                     activeWorkers = Math.max(0, activeWorkers - 1);
-                    notifyAll();          // wake a queued worker waiting for a transfer slot
+                    notifyAll();
                 }
-                // Native processing has returned before this ownership flag can be released.
                 staging.delete();
                 task.workerScheduled = false;
                 if (task.removed) {
@@ -390,6 +414,21 @@ public class DownloadManager {
                 DownloadService.refresh(ctx);
             }
         }
+    }
+
+    private static String extension(String name) {
+        int dot = name == null ? -1 : name.lastIndexOf('.');
+        return dot >= 0 ? name.substring(dot) : ".tmp";
+    }
+
+    private static boolean hasReadyOutput(DownloadTask task) {
+        return task.readyFile != null && task.readyFile.isFile() && task.readyFile.length() > 0;
+    }
+
+    private void cleanupWorkingFiles(DownloadTask task) {
+        if (task.readyFile != null) task.readyFile.delete();
+        task.readyFile = null;
+        for (DownloadTask.Part part : task.parts) Http.deletePartial(part.temp);
     }
 
     private void downloadParts(final DownloadTask task, final Http.CancelToken token, final int nid)
@@ -503,7 +542,7 @@ public class DownloadManager {
                         task.speed = Math.max(0, task.done() - win[1]) * 1000.0 / dt;
                         win[0] = now;
                         win[1] = task.done();
-                        Notifier.progress(ctx, nid, task.title, task.percent());
+                        Notifier.progress(ctx, nid, task);
                         persistThrottled();
                     }
                     if (now - lastUi[0] >= 400) {
@@ -723,7 +762,7 @@ public class DownloadManager {
         if (task == null || task.removed || !tasks.contains(task)
                 || task.state == DownloadTask.State.COMPLETED) return;
         if (task.isActive() && task.state != DownloadTask.State.WAITING_NETWORK) return;
-        if (missingUrls(task) && !hasSourcePage(task)) {
+        if (!hasReadyOutput(task) && missingUrls(task) && !hasSourcePage(task)) {
             task.error = "link_expired";
             task.state = DownloadTask.State.FAILED;
             persist();
@@ -745,7 +784,7 @@ public class DownloadManager {
         recovered.remove(task);
         // A native operation cannot be stopped. Its private staging output and source files
         // stay owned by the worker until it returns; it cannot publish after removed is set.
-        if (task.outFile != null) task.outFile.delete();
+        MediaFiles.delete(ctx, task);
         if (!task.workerScheduled) deleteFiles(task);
         Notifier.clearProgress(ctx, Notifier.idFor(task.id));
         persist();
@@ -753,46 +792,36 @@ public class DownloadManager {
         DownloadService.refresh(ctx);
     }
 
-    /** Renames a completed file inside the app folder and updates the persisted record. */
+    /** Rename the canonical output, preserving its container extension. */
     public synchronized boolean rename(DownloadTask task, String newName) {
-        if (task == null || task.outFile == null || !task.outFile.exists()) {
-            return false;
+        if (task == null || task.state != DownloadTask.State.COMPLETED
+                || newName == null || newName.trim().isEmpty()) return false;
+        String ext = extension(task.outName);
+        String cleaned = MediaFiles.safeName(newName);
+        if (!cleaned.toLowerCase(java.util.Locale.US).endsWith(ext.toLowerCase(java.util.Locale.US))) {
+            cleaned += ext;
         }
-        String oldName = task.outFile.getName();
-        int dot = oldName.lastIndexOf('.');
-        String extension = dot > 0 ? oldName.substring(dot) : "";
-        String cleaned = newName == null ? "" : newName.trim()
-                .replace('/', '_').replace('\\', '_').replace(':', '_')
-                .replace('*', '_').replace('?', '_').replace('"', '_')
-                .replace('<', '_').replace('>', '_').replace('|', '_');
-        if (cleaned.isEmpty()) {
-            return false;
-        }
-        if (!extension.isEmpty()
-                && !cleaned.toLowerCase(java.util.Locale.US)
-                .endsWith(extension.toLowerCase(java.util.Locale.US))) {
-            cleaned += extension;
-        }
-        if (cleaned.equals(oldName)) {
+        try {
+            if (!MediaFiles.rename(ctx, task, cleaned)) return false;
+            task.title = stripExt(task.outName);
+            persist();
+            notifyChanged();
             return true;
-        }
-        File destination = unique(new File(dir, cleaned));
-        if (!task.outFile.renameTo(destination)) {
+        } catch (Exception failure) {
+            Log.w(TAG, "rename failed", failure);
             return false;
         }
-        task.outFile = destination;
-        task.outName = destination.getName();
-        persist();
-        notifyChanged();
-        return true;
     }
 
     private void deleteFiles(DownloadTask task) {
-        if (task.outFile != null) task.outFile.delete();
-        stagingFile(task).delete();
-        for (DownloadTask.Part part : task.parts) {
-            Http.deletePartial(part.temp);
+        MediaFiles.delete(ctx, task);
+        if (task.pendingUri != null) {
+            try { ctx.getContentResolver().delete(android.net.Uri.parse(task.pendingUri), null, null); }
+            catch (RuntimeException ignored) { }
+            task.pendingUri = null;
         }
+        cleanupWorkingFiles(task);
+        stagingFile(task).delete();
     }
 
     /** Wake workers waiting for a transfer slot after the user changes the limit. */
@@ -933,7 +962,7 @@ public class DownloadManager {
 
     private JSONObject toJson(DownloadTask t) throws Exception {
         JSONObject o = new JSONObject();
-        o.put("schemaVersion", 2);
+        o.put("schemaVersion", 3);
         o.put("id", t.id);
         o.put("mediaType", t.mediaType);
         o.put("mimeType", t.mimeType);
@@ -954,12 +983,19 @@ public class DownloadManager {
         o.put("sourceIsVideo", t.sourceIsVideo);
         o.put("label", t.label);
         o.put("outName", t.outName);
+        o.put("outPath", t.outFile == null ? null : t.outFile.getAbsolutePath());
+        o.put("outputUri", t.outputUri);
+        o.put("pendingUri", t.pendingUri);
+        o.put("readyPath", t.readyFile == null ? null : t.readyFile.getAbsolutePath());
+        o.put("publishTotal", t.publishTotal);
+        o.put("thumbUrl", t.thumbUrl);
         o.put("state", t.state.name());
         o.put("createdAt", t.createdAt);
         o.put("completedAt", t.completedAt);
         o.put("mp3Bitrate", t.mp3Bitrate);
         o.put("error", t.error == null ? "" : t.error);
-        o.put("size", t.outFile != null && t.outFile.exists() ? t.outFile.length() : 0);
+        o.put("size", t.outputSize > 0 ? t.outputSize
+                : t.outFile != null && t.outFile.exists() ? t.outFile.length() : 0);
         JSONArray parts = new JSONArray();
         for (DownloadTask.Part p : t.parts) {
             JSONObject po = new JSONObject();
@@ -1037,15 +1073,28 @@ public class DownloadManager {
                     t.outName = stripExt(t.title) + ".mp4";
                 }
                 restoreParts(t, o.optJSONArray("parts"));
-                t.outFile = new File(dir, t.outName);
+                t.outputUri = nullable(o, "outputUri");
+                t.pendingUri = nullable(o, "pendingUri");
+                t.outputSize = o.optLong("size", 0);
+                t.publishTotal = o.optLong("publishTotal", 0);
+                t.thumbUrl = nullable(o, "thumbUrl");
+                String oldPath = nullable(o, "outPath");
+                t.outFile = oldPath != null ? new File(oldPath)
+                        : o.optInt("schemaVersion", 1) < 3 ? new File(dir, t.outName) : null;
+                String readyPath = nullable(o, "readyPath");
+                if (readyPath != null) t.readyFile = new File(readyPath);
 
                 String state = o.optString("state", "COMPLETED");
+                boolean recoveredPublication = MediaFiles.recoverPending(ctx, t);
+                if (recoveredPublication || (t.outputUri != null && MediaFiles.exists(ctx, t))) {
+                    state = "COMPLETED";
+                    if (t.completedAt == 0) t.completedAt = System.currentTimeMillis();
+                }
                 if ("COMPLETED".equals(state)) {
-                    // Prune records whose file was deleted outside the app.
-                    if (!t.outFile.exists() || t.outFile.length() == 0) {
-                        continue;
-                    }
+                    if (!MediaFiles.exists(ctx, t)) continue;
+                    t.outputSize = MediaFiles.size(ctx, t);
                     t.state = DownloadTask.State.COMPLETED;
+                    cleanupWorkingFiles(t);
                 } else if ("FAILED".equals(state)) {
                     t.state = DownloadTask.State.FAILED;
                 } else if ("PAUSED".equals(state)) {

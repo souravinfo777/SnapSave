@@ -25,10 +25,11 @@ import android.widget.Toast;
 import com.snapsave.app.App;
 import com.snapsave.app.R;
 import com.snapsave.app.engine.NativeStreams;
+import com.snapsave.app.engine.DownloadTask;
+import com.snapsave.app.engine.MediaFiles;
 import com.snapsave.app.util.Insets;
 import com.snapsave.app.util.Prefs;
 
-import java.io.File;
 import java.util.Locale;
 
 public class SettingsActivity extends Activity {
@@ -53,6 +54,20 @@ public class SettingsActivity extends Activity {
         build();
     }
 
+    @Override protected void onResume() {
+        super.onResume();
+        if (box != null) build();
+    }
+
+    @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == 1002) {
+            build();
+            if (grantResults.length > 0 && grantResults[0] != android.content.pm.PackageManager.PERMISSION_GRANTED)
+                info("Notifications", "Notifications are off. You can enable them in Android app settings.");
+        }
+    }
+
     private void build() {
         box.removeAllViews();
         boolean nativeOk = NativeStreams.available();
@@ -70,9 +85,9 @@ public class SettingsActivity extends Activity {
             });
         }
 
-        final String folder = App.get().downloads().dir().getAbsolutePath();
-        actionable(add(R.drawable.ic_folder, "Download folder", "App-private storage; export from My Files to share",
-                shortPath(folder)), new Action() {
+        final String folder = MediaFiles.publicFolder().getAbsolutePath();
+        actionable(add(R.drawable.ic_folder, "Download folder", "Finished files save here automatically",
+                "Download/SnapSave"), new Action() {
             @Override
             public void run() {
                 showDownloadFolder(folder);
@@ -297,9 +312,9 @@ public class SettingsActivity extends Activity {
 
     private void showDownloadFolder(final String folder) {
         new AlertDialog.Builder(this).setTitle("Download folder")
-                .setMessage("Finished downloads are stored in this app's private folder:\n\n" + folder
-                        + "\n\nGallery and Music apps cannot open this folder directly. "
-                        + "Use Share or the Gallery/Music export action in My Files to copy a finished file.")
+                .setMessage("Finished downloads are saved automatically to Download/SnapSave:\n\n" + folder
+                        + "\n\nYou can find them in your device's Files app. Share and Open reuse the saved file. "
+                        + "Older downloads in private storage are saved here when you share or open them with another app.")
                 .setPositiveButton("Copy path", new DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(DialogInterface d, int which) {
@@ -338,13 +353,21 @@ public class SettingsActivity extends Activity {
     }
 
     private void showStorage() {
-        final File dir = App.get().downloads().dir();
-        final int completed = App.get().downloads().completed().size();
-        long bytes = folderBytes(dir);
+        int completed = 0;
+        long bytes = 0;
+        java.util.Set<String> outputs = new java.util.HashSet<String>();
+        for (DownloadTask task : App.get().downloads().completed()) {
+            android.net.Uri uri = MediaFiles.uri(task);
+            if (uri != null && outputs.add(uri.toString()) && MediaFiles.exists(this, task)) {
+                completed++;
+                bytes += Math.max(0, MediaFiles.size(this, task));
+            }
+        }
         new AlertDialog.Builder(this).setTitle("Stored on this device")
                 .setMessage(completed + " finished download" + (completed == 1 ? "" : "s")
-                        + "\n" + humanBytes(bytes) + " used in the app folder"
-                        + "\n\nAccount sign-in and cloud sync are not available.")
+                        + "\n" + humanBytes(bytes) + " in saved files"
+                        + "\n\nIncludes public downloads and older private files tracked by SnapSave. "
+                        + "Temporary transfers and app cache are separate.")
                 .setPositiveButton("Delete all files", new DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(DialogInterface d, int which) {
@@ -355,7 +378,7 @@ public class SettingsActivity extends Activity {
 
     private void confirmDeleteAll() {
         new AlertDialog.Builder(this).setTitle("Delete all downloaded files?")
-                .setMessage("This removes every completed file from the app folder. It cannot be undone.")
+                .setMessage("This deletes every completed file tracked by SnapSave, including files in Download/SnapSave. It cannot be undone.")
                 .setPositiveButton("Delete", new DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(DialogInterface d, int which) {
@@ -383,27 +406,6 @@ public class SettingsActivity extends Activity {
     private String storageValue() {
         int n = App.get().downloads().completed().size();
         return n + " file" + (n == 1 ? "" : "s");
-    }
-
-    private static String shortPath(String path) {
-        if (path == null) {
-            return "";
-        }
-        int cut = path.lastIndexOf("SnapSave");
-        return cut > 0 ? "..." + path.substring(cut) : path;
-    }
-
-    private static long folderBytes(File dir) {
-        long total = 0;
-        File[] files = dir == null ? null : dir.listFiles();
-        if (files != null) {
-            for (File f : files) {
-                if (f.isFile()) {
-                    total += f.length();
-                }
-            }
-        }
-        return total;
     }
 
     private static String humanBytes(long bytes) {

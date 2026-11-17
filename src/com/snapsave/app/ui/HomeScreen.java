@@ -33,12 +33,19 @@ public class HomeScreen extends Screen {
     private LinearLayout trendingContainer;
     private boolean loadingTrending = false;
     private long lastAttempt = 0;
+    private boolean destroyed;
+    private List<MediaItem> pendingTrending;
 
     public HomeScreen(MainActivity act) {
         super(act, R.layout.fragment_home);
         trendingContainer = (LinearLayout) root.findViewById(R.id.trending_container);
         buildSites();
-        loadTrending();
+        root.findViewById(R.id.home_downloads).setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { act.select(2); }
+        });
+        root.findViewById(R.id.home_all_sites).setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { showAllSites(); }
+        });
 
         root.findViewById(R.id.search_bar).setOnClickListener(new View.OnClickListener() {
             @Override
@@ -62,10 +69,17 @@ public class HomeScreen extends Screen {
 
     @Override
     public void onShow() {
+        if (pendingTrending != null) {
+            List<MediaItem> items = pendingTrending;
+            pendingTrending = null;
+            renderTrending(items);
+        }
         if (trendingContainer.getChildCount() == 0) {
             loadTrending();
         }
     }
+
+    @Override public void destroy() { destroyed = true; pendingTrending = null; }
 
     // -------- popular sites --------
 
@@ -81,7 +95,8 @@ public class HomeScreen extends Screen {
             item.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
-                    promptLink(siteName);
+                    if ("More sites".equals(siteName)) showAllSites();
+                    else promptLink(siteName);
                 }
             });
             GridLayout.LayoutParams lp = new GridLayout.LayoutParams();
@@ -138,10 +153,10 @@ public class HomeScreen extends Screen {
                     @Override
                     public void run() {
                         loadingTrending = false;
-                        if (act.isFinishing() || act.isDestroyed()) {
-                            return;   // the host activity is gone — never touch dead views
-                        }
-                        renderTrending(items);
+                        if (destroyed || act.isFinishing() || act.isDestroyed()) return;
+                        if (act.currentTab() != 0 || !root.isShown()) {
+                            pendingTrending = items == null ? new java.util.ArrayList<MediaItem>() : items;
+                        } else renderTrending(items);
                     }
                 });
             }
@@ -253,9 +268,18 @@ public class HomeScreen extends Screen {
         openDetail(act, m, false);
     }
 
+    private void showAllSites() {
+        final String[] sites = {"YouTube", "Facebook", "Instagram", "TikTok", "DailyMotion", "Vimeo", "Twitch", "Other HTTPS media link"};
+        new AlertDialog.Builder(act).setTitle("Download from a site")
+                .setItems(sites, new android.content.DialogInterface.OnClickListener() {
+                    @Override public void onClick(android.content.DialogInterface d, int which) { promptLink(sites[which]); }
+                }).setNegativeButton("Close", null).show();
+    }
+
     private void promptLink(String site) {
         final EditText input = new EditText(act);
-        input.setInputType(InputType.TYPE_TEXT_VARIATION_URI);
+        input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+        input.setSingleLine(true);
         input.setHint("Paste a " + site + " link");
         input.setTextColor(0xFFFFFFFF);
         input.setHintTextColor(0xFF6B7175);
@@ -263,23 +287,19 @@ public class HomeScreen extends Screen {
         int pad = Util.dp(act, 18);
         wrap.setPadding(pad, pad / 2, pad, 0);
         wrap.addView(input);
-        new AlertDialog.Builder(act)
-                .setTitle(site)
-                .setView(wrap)
-                .setPositiveButton("Download", new android.content.DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(android.content.DialogInterface d, int w) {
-                        String text = input.getText().toString().trim();
-                        String url = Resolvers.firstUrl(text);
-                        if (url == null && !text.isEmpty() && Resolvers.isYouTube(text)) {
-                            url = text;
-                        }
-                        if (url != null) {
-                            act.openUrl(url);
-                        }
-                    }
-                })
-                .setNegativeButton("Cancel", null)
-                .show();
+        final AlertDialog dialog = new AlertDialog.Builder(act).setTitle(site).setView(wrap)
+                .setPositiveButton("Download", null).setNegativeButton("Cancel", null).create();
+        dialog.show();
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                String text = input.getText().toString().trim();
+                String url = Resolvers.firstUrl(text);
+                if (url == null && !text.isEmpty() && Resolvers.isYouTube(text))
+                    url = "https://www.youtube.com/watch?v=" + Resolvers.videoId(text);
+                if (url == null) { input.setError("Paste a valid media link"); return; }
+                dialog.dismiss();
+                act.openUrl(url);
+            }
+        });
     }
 }

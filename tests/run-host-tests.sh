@@ -35,13 +35,15 @@ mkdir -p "$BUILD/classes" "$BUILD/empty-sourcepath" "$BUILD/work"
     "$PROJECT/src/com/snapsave/app/model/StreamOption.java" \
     "$PROJECT/src/com/snapsave/app/engine/DownloadTask.java" \
     "$PROJECT/src/com/snapsave/app/engine/ResolvedMedia.java" \
+    "$PROJECT/src/com/snapsave/app/engine/MediaUrls.java" \
     "$PROJECT/src/com/snapsave/app/engine/MediaTypes.java" \
     "$PROJECT/src/com/snapsave/app/engine/ResolveFailure.java" \
     "$PROJECT/src/com/snapsave/app/engine/Http.java" \
     "$PROJECT/src/com/snapsave/app/engine/TaskRefresh.java" \
     "$TESTS/stubs/com/snapsave/app/engine/Resolvers.java" \
     "$TESTS/stubs/com/snapsave/app/engine/FastSaver.java" \
-    "$TESTS/HostRegression.java"
+    "$TESTS/HostRegression.java" \
+    "$TESTS/ResolvedMediaValidityRegression.java"
 
 # Fresh local TLS identity, trusted only by this test JVM; no checked-in secrets/certificates.
 "$KEYTOOL" -genkeypair -alias fixture -keyalg RSA -keysize 2048 -validity 2 \
@@ -51,3 +53,5 @@ mkdir -p "$BUILD/classes" "$BUILD/empty-sourcepath" "$BUILD/work"
 
 "$JAVA" -ea -cp "$BUILD/classes" com.snapsave.app.engine.HostRegression \
     "$BUILD/work" "$BUILD/fixture.jks"
+
+"$JAVA" -ea -cp "$BUILD/classes" com.snapsave.app.engine.ResolvedMediaValidityRegression

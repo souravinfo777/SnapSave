@@ -9,7 +9,7 @@ import java.util.List;
 /** A single download job and its live progress. */
 public class DownloadTask {
 
-    public enum State { QUEUED, DOWNLOADING, MERGING, CONVERTING, COMPLETED, PAUSED, FAILED, WAITING_NETWORK }
+    public enum State { QUEUED, DOWNLOADING, MERGING, CONVERTING, PUBLISHING, COMPLETED, PAUSED, FAILED, WAITING_NETWORK }
 
     /** One media part to fetch (a video-only or audio-only stream, or a single progressive file). */
     public static class Part {
@@ -59,9 +59,18 @@ public class DownloadTask {
     public long createdAt = System.currentTimeMillis();
     public long completedAt;
 
+    /** v1.10 legacy private output, or API 21-28 public file path. */
     public File outFile;
-    /** Last public MediaStore URI produced by an export, when the process still remembers it. */
-    public transient String exportedUri;
+    /** Canonical public Downloads/SnapSave output on scoped-storage devices. */
+    public String outputUri;
+    /** In-progress MediaStore entry; persisted before copying so recovery can reconcile it. */
+    public String pendingUri;
+    public long outputSize;
+    public String thumbUrl;
+    /** Private validated result retained if publication needs retry after a process death. */
+    public File readyFile;
+    public long publishDone;
+    public long publishTotal;
     public transient Http.CancelToken cancelToken = new Http.CancelToken();
 
     /** Set by {@link DownloadManager#remove}: the worker must stop and delete nothing else. */
@@ -101,6 +110,6 @@ public class DownloadTask {
     public boolean isActive() {
         return state == State.QUEUED || state == State.DOWNLOADING
                 || state == State.MERGING || state == State.CONVERTING
-                || state == State.WAITING_NETWORK;
+                || state == State.PUBLISHING || state == State.WAITING_NETWORK;
     }
 }

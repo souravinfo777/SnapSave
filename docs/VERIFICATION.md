@@ -1,5 +1,39 @@
 # Verification record
 
+## 2026-11-17 — version 1.11 (code 12)
+
+Built the resumed storage, resolver, thumbnail and UI changes with Microsoft OpenJDK
+17.0.20.1, Android SDK `D:/android-sdk`, build-tools 35.0.0 and platform android-35.
+Minimum API remains 21 and target API remains 35.
+
+Completed checks:
+
+- Full resource compile/link, Java compile, D8, package and signing pipeline succeeded.
+- APK signature schemes v1/v2/v3 verified and the build's ZIP alignment check passed.
+- APK credential/signing-file packaging scan passed; local API key assets were excluded.
+- All 17 host regression cases passed, including parallel byte ranges and ignored-Range
+  fallback; `ResolvedMediaValidityRegression` passed.
+- APK: **2,775,333 bytes**; SHA-256
+  `9b58bfecd47bf251ddb5e09b4c0a6bd6ee1722c782bf1c162109b831a7e57f46`.
+- Versioned artifact: `APK/SnapSave-v1.11.apk`.
+
+The interrupted implementation initially failed compilation because player layout IDs and
+`MediaActions.details()` were missing. These were completed, and the music artwork view
+was changed to the ImageView expected by its activity before the successful build.
+The compiler reports deprecated API usage; host tests report the Java 8 bootstrap-classpath
+warning. Neither produced a build/test failure.
+
+Changes include automatic public `Download/SnapSave` publication, persisted output URIs
+and publication recovery, legacy storage permission handling, usable-stream validation,
+share-link handling, thumbnail loading, progress notifications and player controls.
+
+**Android device/emulator testing was skipped at the user's explicit request.** The old
+v1.10 runtime screenshots predate these changes. Live TikTok resolution, public output
+publication/recovery, rename/delete/share, thumbnails, playback and lifecycle behavior
+remain unverified for this APK. Host tests do not validate Android MediaStore or UI paths.
+
+---
+
 ## 2026-11-17 — version 1.10 (code 11)
 
 Build host: Windows, Microsoft OpenJDK 17.0.20.1, Android SDK discovered at `D:/android-sdk`

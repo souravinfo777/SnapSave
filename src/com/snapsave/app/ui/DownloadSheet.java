@@ -17,7 +17,9 @@ import android.widget.Toast;
 import com.snapsave.app.App;
 import com.snapsave.app.R;
 import com.snapsave.app.engine.DownloadTask;
+import com.snapsave.app.engine.Http;
 import com.snapsave.app.engine.NativeStreams;
+import com.snapsave.app.engine.MediaUrls;
 import com.snapsave.app.engine.ResolvedMedia;
 import com.snapsave.app.engine.Resolvers;
 import com.snapsave.app.model.StreamOption;
@@ -36,7 +38,16 @@ public class DownloadSheet extends Dialog {
         void onDismiss();
     }
 
-    private final ResolvedMedia media;
+    private static final java.util.Map<Activity, DownloadSheet> active =
+            new java.util.IdentityHashMap<Activity, DownloadSheet>();
+    private final Activity host;
+    private ResolvedMedia media;
+    private final boolean audioFirst;
+    private Thread prepareThread;
+    private Thread probeThread;
+    private int generation;
+    private Runnable permissionAction;
+    private TextView statusView;
     private final String title;
     private final String author;
     private final int grad;
@@ -54,9 +65,11 @@ public class DownloadSheet extends Dialog {
 
     public static DownloadSheet create(Context c, ResolvedMedia r, String title, String author,
                                        int grad, boolean audioFirst, String thumbUrl) {
-        if (r == null || !r.hasAnything()) {
-            return null;
-        }
+        if (!(c instanceof Activity)) return null;
+        Activity activity = (Activity) c;
+        if (activity.isFinishing() || activity.isDestroyed()) return null;
+        DownloadSheet existing = active.get(activity);
+        if (existing != null && !existing.dismissed) return existing;
         return new DownloadSheet(c, r, title, author, grad, audioFirst, thumbUrl);
     }
 
@@ -73,7 +86,9 @@ public class DownloadSheet extends Dialog {
     private DownloadSheet(Context context, ResolvedMedia r, String title, String author, int grad,
                           boolean audioFirst, String thumbUrl) {
         super(context, R.style.Theme_SnapSave_Dialog);
-        this.media = r;
+        this.host = (Activity) context;
+        this.media = r == null ? new ResolvedMedia() : r;
+        this.audioFirst = audioFirst;
         this.title = title == null ? "" : title;
         this.author = author == null ? "" : author;
         this.grad = grad;
@@ -83,16 +98,37 @@ public class DownloadSheet extends Dialog {
         videoBox = (LinearLayout) findViewById(R.id.video_options);
         audioBox = (LinearLayout) findViewById(R.id.audio_options);
         downloadLabel = (TextView) findViewById(R.id.sheet_download_label);
+        statusView = new TextView(context);
+        statusView.setTextColor(context.getResources().getColor(R.color.text_secondary));
+        int padding = (int) (12 * context.getResources().getDisplayMetrics().density);
+        statusView.setPadding(0, padding, 0, padding);
+        statusView.setVisibility(View.GONE);
+        LinearLayout buttonParent = (LinearLayout) findViewById(R.id.sheet_download).getParent();
+        buttonParent.addView(statusView, buttonParent.indexOfChild(findViewById(R.id.sheet_download)));
 
         // header: thumbnail + title
         View header = findViewById(R.id.sheet_header);
-        String thumb = thumbUrl != null ? thumbUrl : r.thumbUrl;
+        String thumb = thumbUrl != null ? thumbUrl : media.thumbUrl;
         if (thumb != null || !this.title.isEmpty()) {
             header.setVisibility(View.VISIBLE);
             ((TextView) findViewById(R.id.sheet_title)).setText(this.title);
             ImageLoader.load((ImageView) findViewById(R.id.sheet_thumb), thumb, Util.grad(grad));
         }
 
+        loadOptions();
+        findViewById(R.id.sheet_close).setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { dismiss(); }
+        });
+        findViewById(R.id.sheet_download).setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                if (options.isEmpty()) retryOptions(); else startDownload();
+            }
+        });
+    }
+
+    private void loadOptions() {
+        ResolvedMedia r = media;
+        options.clear();
         List<StreamOption> videos = new ArrayList<StreamOption>();
         List<StreamOption> audios = new ArrayList<StreamOption>();
         for (StreamOption o : r.videoStreams) {
@@ -119,7 +155,7 @@ public class DownloadSheet extends Dialog {
 
         int preferredBitrate = Prefs.mp3Bitrate();
         long mp3Size = audioEstimate(r.duration, preferredBitrate);
-        if (NativeStreams.canMp3() && r.bestAudio != null && r.bestAudio.url != null) {
+        if (NativeStreams.canMp3() && r.bestAudio != null && MediaUrls.isHttps(r.bestAudio.url)) {
             StreamOption mp3 = new StreamOption("MP3 • " + preferredBitrate + " kbps", "Convert audio", mp3Size, 0, true);
             mp3.url = r.bestAudio.url;
             mp3.mimeType = "audio/mpeg";
@@ -133,7 +169,7 @@ public class DownloadSheet extends Dialog {
         // No audio track anywhere? Offer an MP3 by pulling the sound out of the best video
         // locally with the SnapTube native engine.
         if (!hasAudio(audios) && NativeStreams.canMp3() && !videos.isEmpty()
-                && videos.get(0).url != null && videos.get(0).progressive) {
+                && MediaUrls.isHttps(videos.get(0).url) && videos.get(0).progressive) {
             StreamOption source = videos.get(0);
             StreamOption mp3 = new StreamOption("MP3 • " + preferredBitrate + " kbps", "Extract audio", mp3Size, 0, true);
             mp3.url = source.url;
@@ -163,18 +199,70 @@ public class DownloadSheet extends Dialog {
         select(defaultSelection(audioFirst));
         probeMissingSizes();
 
-        findViewById(R.id.sheet_close).setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                dismiss();
+        if (options.isEmpty()) showEmpty("No usable download options. Retry or close this popup.");
+    }
+
+    private void showEmpty(String message) {
+        downloadLabel.setText(MediaUrls.isHttps(media.pageUrl) ? "Retry options" : "Close");
+        statusView.setText(message);
+        statusView.setVisibility(View.VISIBLE);
+        videoBox.removeAllViews();
+        audioBox.removeAllViews();
+        findViewById(R.id.video_section_title).setVisibility(View.GONE);
+        findViewById(R.id.audio_section_title).setVisibility(View.GONE);
+    }
+
+    private void retryOptions() {
+        if (!alive() || submitting) return;
+        if (!MediaUrls.isHttps(media.pageUrl)) {
+            dismiss();
+            return;
+        }
+        setPreparing(true, "Resolving options…");
+        final int request = ++generation;
+        final String page = media.pageUrl;
+        prepareThread = new Thread(new Runnable() {
+            @Override public void run() {
+                final Resolvers.Outcome outcome = Resolvers.resolveDetailed(page);
+                host.runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        if (!alive() || generation != request) return;
+                        setPreparing(false, null);
+                        if (outcome.isSuccess()) {
+                            media = outcome.media;
+                            statusView.setVisibility(View.GONE);
+                            loadOptions();
+                        } else {
+                            showEmpty(outcome.message + " Retry or close this popup.");
+                        }
+                    }
+                });
             }
-        });
-        findViewById(R.id.sheet_download).setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                startDownload();
-            }
-        });
+        }, "sheet-retry");
+        prepareThread.start();
+    }
+
+    private boolean alive() {
+        return !dismissed && !host.isFinishing() && !host.isDestroyed();
+    }
+
+    private void setPreparing(boolean value, String message) {
+        submitting = value;
+        findViewById(R.id.sheet_download).setEnabled(!value);
+        if (value) downloadLabel.setText(message);
+        else if (!options.isEmpty()) select(selected);
+    }
+
+    public static void dismissFor(Activity activity) {
+        DownloadSheet sheet = active.get(activity);
+        if (sheet != null) sheet.dismiss();
+    }
+
+    @Override
+    public void show() {
+        if (!alive() || isShowing()) return;
+        active.put(host, this);
+        super.show();
     }
 
     private int defaultSelection(boolean audioFirst) {
@@ -213,13 +301,20 @@ public class DownloadSheet extends Dialog {
 
     @Override
     public void dismiss() {
+        if (dismissed) return;
+        dismissed = true;
+        generation++;
+        if (prepareThread != null) prepareThread.interrupt();
+        if (probeThread != null) probeThread.interrupt();
+        StoragePermission.cancel(host, permissionAction);
+        if (active.get(host) == this) active.remove(host);
         super.dismiss();
-        if (!dismissed) {
-            dismissed = true;
-            if (onDismiss != null) {
-                onDismiss.onDismiss();
-            }
-        }
+        if (onDismiss != null) onDismiss.onDismiss();
+    }
+
+    @Override
+    public void cancel() {
+        dismiss();
     }
 
     @Override
@@ -244,34 +339,36 @@ public class DownloadSheet extends Dialog {
     private void probeMissingSizes() {
         final List<StreamOption> pending = new ArrayList<StreamOption>();
         for (StreamOption o : options) {
-            if (!o.audioOnly && o.sizeBytes <= 0 && o.url != null && o.url.startsWith("http")) {
+            if (!o.audioOnly && o.sizeBytes <= 0 && MediaUrls.isHttps(o.url)) {
                 pending.add(o);
             }
         }
         if (pending.isEmpty()) {
             return;
         }
-        new Thread(new Runnable() {
+        if (probeThread != null) probeThread.interrupt();
+        final int request = generation;
+        probeThread = new Thread(new Runnable() {
             @Override
             public void run() {
                 for (final StreamOption o : pending) {
+                    if (Thread.currentThread().isInterrupted()) return;
                     final long size = Resolvers.probeSize(o.url);
                     if (size > 0) {
                         new android.os.Handler(android.os.Looper.getMainLooper()).post(new Runnable() {
                             @Override
                             public void run() {
-                                if (dismissed) {
-                                    return;
-                                }
+                                if (!alive() || request != generation) return;
                                 o.sizeBytes = size;
                                 render();
-                                select(selected);
+                                if (!submitting) select(selected);
                             }
                         });
                     }
                 }
             }
-        }, "size-probe").start();
+        }, "size-probe");
+        probeThread.start();
     }
 
     private void render() {
@@ -296,9 +393,8 @@ public class DownloadSheet extends Dialog {
     }
 
     private void select(int index) {
-        if (options.isEmpty()) {
-            return;
-        }
+        if (options.isEmpty() || submitting || index < 0 || index >= options.size()) return;
+        statusView.setVisibility(View.GONE);
         selected = index;
         updateRows(videoBox);
         updateRows(audioBox);
@@ -329,54 +425,69 @@ public class DownloadSheet extends Dialog {
     }
 
     private void startDownload() {
-        startDownload(false);
+        if (!alive() || options.isEmpty() || submitting) return;
+        if (permissionAction == null) {
+            permissionAction = new Runnable() {
+                @Override public void run() {
+                    permissionAction = null;
+                    if (alive() && !submitting && !options.isEmpty()) prepareDownload(options.get(selected));
+                }
+            };
+        }
+        StoragePermission.run(host, permissionAction);
     }
 
-    /**
-     * @param resolvedUrl the caller already fetched the backend's signed URL, so the lazy-format
-     *                    branch must be skipped instead of doing the same network call twice.
-     */
-    private void startDownload(boolean resolvedUrl) {
-        if (options.isEmpty() || dismissed || (submitting && !resolvedUrl)) {
-            return;   // one tap, one task — double taps must not queue duplicates
-        }
-        submitting = true;
-        final StreamOption o = options.get(selected);
-
-        // Backend formats (FastSaver) resolve to a signed URL only at download time.
-        if (!resolvedUrl && (o.url == null || o.url.isEmpty()) && o.serverFormat != null
-                && media.pageUrl != null) {
-            Toast.makeText(getContext(), "Preparing download...", Toast.LENGTH_SHORT).show();
+    private void prepareDownload(final StreamOption option) {
+        if (!alive() || submitting) return;
+        setPreparing(true, "Preparing download…");
+        final int request = ++generation;
+        if (MediaUrls.isHttps(option.url)) {
+            submitDownload(option);
+        } else if (media.canResolve(option)) {
             final String pageUrl = media.pageUrl;
-            new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    final String du = com.snapsave.app.engine.FastSaver.downloadUrl(pageUrl, o.serverFormat);
-                    new android.os.Handler(android.os.Looper.getMainLooper()).post(new Runnable() {
-                        @Override
-                        public void run() {
-                            if (dismissed) {
+            prepareThread = new Thread(new Runnable() {
+                @Override public void run() {
+                    String result = null;
+                    Http.RequestScope scope = Http.openRequestScope(30000L);
+                    try {
+                        result = com.snapsave.app.engine.FastSaver.downloadUrl(pageUrl, option.serverFormat.trim());
+                    } catch (Exception ignored) {
+                    } finally {
+                        scope.close();
+                    }
+                    final String url = result;
+                    host.runOnUiThread(new Runnable() {
+                        @Override public void run() {
+                            if (!alive() || request != generation) return;
+                            if (!MediaUrls.isHttps(url)) {
+                                preparationFailed("Could not prepare this option. Tap to retry or choose another.");
                                 return;
                             }
-                            if (du == null) {
-                                submitting = false;
-                                Toast.makeText(getContext(), "Could not prepare this download.", Toast.LENGTH_LONG).show();
-                            } else {
-                                o.url = du;
-                                startDownload(true);   // bypasses the submitting guard
-                            }
+                            option.url = url;
+                            submitDownload(option);
                         }
                     });
                 }
-            }, "resolve-url").start();
-            return;
+            }, "resolve-url");
+            prepareThread.start();
+        } else {
+            preparationFailed("This option has no usable HTTPS URL. Retry options or close.");
         }
-        if (o.url == null || o.url.isEmpty()) {
-            submitting = false;
-            Toast.makeText(getContext(), "No download URL for this option.", Toast.LENGTH_SHORT).show();
-            return;
-        }
+    }
 
+    private void preparationFailed(String message) {
+        setPreparing(false, null);
+        downloadLabel.setText("Retry download");
+        statusView.setText(message);
+        statusView.setVisibility(View.VISIBLE);
+    }
+
+    private void submitDownload(StreamOption o) {
+        if (!alive() || !submitting) return;
+        if (!MediaUrls.isHttps(o.url)) {
+            preparationFailed("Invalid download URL. Choose another option or retry.");
+            return;
+        }
         DownloadTask t = new DownloadTask();
         t.title = clean(title, o);
         t.author = author;
@@ -384,9 +495,10 @@ public class DownloadSheet extends Dialog {
         t.option = o;
         t.label = o.label;
         t.sourceIsVideo = o.sourceIsVideo;
+        t.thumbUrl = media.thumbUrl;
         t.sourcePage = media.pageUrl;
         t.provider = media.serverName;
-        t.formatToken = o.serverFormat;
+        t.formatToken = media.canResolve(o) ? o.serverFormat.trim() : null;
         t.formatItag = o.itag;
         t.formatHeight = o.height;
         t.formatBitrate = o.sourceMimeType != null ? o.sourceBitrate : o.bitrate;
@@ -410,7 +522,7 @@ public class DownloadSheet extends Dialog {
             t.kind = "file";
             t.outName = clean(title, o) + imageExt(o);
             t.parts.add(part);
-        } else if (o.serverFormat != null) {
+        } else if (media.canResolve(o)) {
             if (o.audioOnly) {
                 boolean m4a = "m4a".equals(o.serverFormat);
                 t.kind = "file";
@@ -432,7 +544,7 @@ public class DownloadSheet extends Dialog {
             }
             t.outName = clean(title, o) + ext;
             t.parts.add(part);
-        } else if (o.progressive || media.bestAudio == null || media.bestAudio.url == null) {
+        } else if (o.progressive || media.bestAudio == null || !MediaUrls.isHttps(media.bestAudio.url)) {
             t.kind = "video";
             t.outName = clean(title, o) + videoExt(o);
             t.parts.add(part);
@@ -452,7 +564,12 @@ public class DownloadSheet extends Dialog {
             t.parts.add(audio);
         }
 
-        App.get().downloads().submit(t);
+        try {
+            App.get().downloads().submit(t);
+        } catch (RuntimeException e) {
+            preparationFailed("Could not start the download. Tap to retry.");
+            return;
+        }
         Toast.makeText(getContext(), "Download started • " + o.label, Toast.LENGTH_SHORT).show();
         dismiss();
     }
@@ -500,8 +617,8 @@ public class DownloadSheet extends Dialog {
     }
 
     /** Selectable when it has a direct URL or a lazy backend format to resolve at download time. */
-    private static boolean usable(StreamOption o) {
-        return o != null && ((o.url != null && !o.url.isEmpty()) || o.serverFormat != null);
+    private boolean usable(StreamOption o) {
+        return media.isUsable(o);
     }
 
     private static boolean hasAudio(List<StreamOption> opts) {

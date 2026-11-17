@@ -23,6 +23,8 @@
     </LinearLayout>
 
     <TextView android:id="@+id/set_value" android:layout_width="wrap_content"
-        android:layout_height="wrap_content" android:textColor="@color/primary"
+        android:layout_height="wrap_content" android:layout_marginStart="8dp"
+        android:maxWidth="112dp" android:maxLines="2" android:ellipsize="end"
+        android:gravity="end" android:textColor="@color/primary"
         android:textSize="14sp" android:textStyle="bold" />
 </LinearLayout>

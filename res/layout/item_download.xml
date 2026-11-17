@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="wrap_content"
+    android:layout_marginTop="10dp" android:orientation="vertical"
+    android:background="@drawable/bg_card" android:padding="12dp"
+    android:clickable="true" android:focusable="true">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="horizontal" android:gravity="center_vertical">
+        <FrameLayout android:layout_width="88dp" android:layout_height="62dp">
+            <ImageView android:id="@+id/thumb_bg" android:layout_width="match_parent"
+                android:layout_height="match_parent" android:scaleType="centerCrop"
+                android:background="@drawable/bg_thumb" />
+            <TextView android:id="@+id/thumb_duration" android:layout_width="wrap_content"
+                android:layout_height="wrap_content" android:layout_gravity="bottom|end"
+                android:layout_margin="4dp" android:background="@drawable/bg_duration"
+                android:paddingStart="5dp" android:paddingEnd="5dp"
+                android:textColor="@color/white" android:textSize="10sp" />
+        </FrameLayout>
+        <TextView android:id="@+id/video_title" android:layout_width="0dp"
+            android:layout_height="wrap_content" android:layout_weight="1"
+            android:layout_marginStart="12dp" android:layout_marginEnd="4dp"
+            android:maxLines="2" android:ellipsize="end" android:textSize="15sp"
+            android:textStyle="bold" android:textColor="@color/text_primary" />
+        <FrameLayout android:id="@+id/video_action" android:layout_width="48dp"
+            android:layout_height="48dp" android:background="@drawable/bg_icon_circle"
+            android:clickable="true" android:focusable="true">
+            <ImageView android:id="@+id/video_action_icon" android:layout_width="22dp"
+                android:layout_height="22dp" android:layout_gravity="center"
+                android:tint="@color/primary" android:src="@drawable/ic_pause" />
+        </FrameLayout>
+    </LinearLayout>
+    <TextView android:id="@+id/video_meta" android:layout_width="match_parent"
+        android:layout_height="wrap_content" android:layout_marginTop="10dp"
+        android:textColor="@color/text_secondary" android:textSize="13sp" />
+    <ProgressBar android:id="@+id/video_progress" style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent" android:layout_height="5dp"
+        android:layout_marginTop="10dp" android:max="100"
+        android:indeterminateTint="@color/primary"
+        android:progressDrawable="@drawable/progress_horizontal" />
+</LinearLayout>

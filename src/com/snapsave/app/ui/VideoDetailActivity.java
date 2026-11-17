@@ -28,6 +28,9 @@ public class VideoDetailActivity extends Activity {
     private String title, author, duration, meta, url, thumbUrl;
     private int grad;
     private boolean autoSheet;
+    private boolean pendingAudio;
+    private boolean openWhenResolved;
+    private int resolveGeneration;
 
     private LinearLayout downloadBtn;
     private TextView downloadLabel;
@@ -49,12 +52,18 @@ public class VideoDetailActivity extends Activity {
         thumbUrl = getIntent().getStringExtra("thumbUrl");
         grad = getIntent().getIntExtra("grad", 0);
         url = getIntent().getStringExtra("url");
-        autoSheet = getIntent().getBooleanExtra("autoSheet", false);
+        autoSheet = savedInstanceState == null ? getIntent().getBooleanExtra("autoSheet", false)
+                : savedInstanceState.getBoolean("autoSheet", false);
+        if (savedInstanceState != null) {
+            pendingAudio = savedInstanceState.getBoolean("pendingAudio", false);
+            openWhenResolved = savedInstanceState.getBoolean("openWhenResolved", false);
+        }
         if (title == null || title.isEmpty()) title = "Media";
         if (author == null) author = "";
         if (duration == null) duration = "";
         if (meta == null) meta = "";
 
+        findViewById(R.id.preview_badge).setVisibility(View.GONE);
         previewImg = (ImageView) findViewById(R.id.preview_img);
         findViewById(R.id.preview).setBackgroundResource(Util.grad(grad));
         if (thumbUrl != null && !thumbUrl.isEmpty()) {
@@ -116,11 +125,7 @@ public class VideoDetailActivity extends Activity {
         addAction(row, R.drawable.ic_music, "MP3", new Runnable() {
             @Override
             public void run() {
-                if (resolved != null && resolved.hasAnything()) {
-                    DownloadSheet.open(VideoDetailActivity.this, resolved, title, author, grad, true);
-                } else {
-                    Toast.makeText(VideoDetailActivity.this, "Still resolving…", Toast.LENGTH_SHORT).show();
-                }
+                requestOptions(true);
             }
         });
         addAction(row, R.drawable.ic_share, "Share", new Runnable() {
@@ -203,12 +208,14 @@ public class VideoDetailActivity extends Activity {
     }
 
     private void resolveAsync() {
+        if (resolving || isFinishing() || isDestroyed()) return;
         if (url == null || url.isEmpty()) {
             downloadLabel.setText("No link");
             downloadBtn.setEnabled(false);
             return;
         }
         resolving = true;
+        final int request = ++resolveGeneration;
         downloadLabel.setText("Resolving…");
         resolverThread = new Thread(new Runnable() {
             @Override
@@ -221,6 +228,7 @@ public class VideoDetailActivity extends Activity {
                         if (isFinishing() || isDestroyed()) {
                             return;
                         }
+                        if (request != resolveGeneration) return;
                         resolved = r;
                         resolving = false;
                         if (r != null) {
@@ -229,6 +237,7 @@ public class VideoDetailActivity extends Activity {
                                 title = r.title;
                             }
                             if (r.author != null && !r.author.isEmpty()) {
+                                author = r.author;
                                 ((TextView) findViewById(R.id.channel_name)).setText(r.author);
                                 ((TextView) findViewById(R.id.channel_letter))
                                         .setText(r.author.substring(0, 1).toUpperCase());
@@ -240,9 +249,9 @@ public class VideoDetailActivity extends Activity {
                                 ImageLoader.load(previewImg, r.thumbUrl, Util.grad(grad));
                             }
                             String q = bestQuality(r);
-                            if (q != null) {
-                                ((TextView) findViewById(R.id.preview_badge)).setText(q);
-                            }
+                            TextView badge = (TextView) findViewById(R.id.preview_badge);
+                            badge.setVisibility(q == null ? View.GONE : View.VISIBLE);
+                            if (q != null) badge.setText(q);
                         }
                         if (r == null || !r.hasAnything()) {
                             // Leave an actionable state instead of an enabled button that only toasts.
@@ -251,8 +260,11 @@ public class VideoDetailActivity extends Activity {
                             return;
                         }
                         downloadLabel.setText("Download Video");
-                        if (autoSheet && resolved != null && resolved.hasAnything()) {
-                            DownloadSheet.open(VideoDetailActivity.this, resolved, title, author, grad, false);
+                        if (autoSheet || openWhenResolved) {
+                            boolean audio = openWhenResolved && pendingAudio;
+                            autoSheet = false;
+                            openWhenResolved = false;
+                            DownloadSheet.open(VideoDetailActivity.this, resolved, title, author, grad, audio);
                         }
                     }
                 });
@@ -262,31 +274,54 @@ public class VideoDetailActivity extends Activity {
     }
 
     @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        StoragePermission.onResult(this, requestCode, permissions, grantResults);
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle outState) {
+        outState.putBoolean("autoSheet", autoSheet);
+        outState.putBoolean("pendingAudio", pendingAudio);
+        outState.putBoolean("openWhenResolved", openWhenResolved);
+        super.onSaveInstanceState(outState);
+    }
+
+    @Override
     protected void onDestroy() {
+        resolveGeneration++;
         if (resolverThread != null) resolverThread.interrupt();
+        DownloadSheet.dismissFor(this);
+        StoragePermission.onDestroy(this);
         super.onDestroy();
     }
 
     private String bestQuality(ResolvedMedia r) {
         int h = 0;
         for (StreamOption o : r.videoStreams) {
-            if (o.height > h) {
+            if (r.isUsable(o) && o.height > h) {
                 h = o.height;
             }
         }
-        return h > 0 ? "HD " + h + "p" : null;
+        return h > 0 ? h + "p" : null;
     }
 
     private void onDownloadClicked() {
-        if (resolving) {
-            Toast.makeText(this, "Resolving streams…", Toast.LENGTH_SHORT).show();
+        requestOptions(false);
+    }
+
+    private void requestOptions(boolean audio) {
+        if (isFinishing() || isDestroyed()) return;
+        if (resolved != null && resolved.hasAnything()) {
+            DownloadSheet.open(this, resolved, title, author, grad, audio);
             return;
         }
-        if (resolved != null && resolved.hasAnything()) {
-            DownloadSheet.open(this, resolved, title, author, grad, false);
+        pendingAudio = audio;
+        openWhenResolved = true;
+        if (resolving) {
+            Toast.makeText(this, "Resolving streams… Options will open when ready.", Toast.LENGTH_SHORT).show();
         } else {
-            Toast.makeText(this, "No downloadable streams found for this link.", Toast.LENGTH_LONG).show();
-            resolveAsync();   // the link may still resolve on a second attempt
+            resolveAsync();
         }
     }
 }

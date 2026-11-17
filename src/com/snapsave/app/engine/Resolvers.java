@@ -277,15 +277,15 @@ public final class Resolvers {
     /** A result is "rich" when it offers video plus a separate audio track (so the sheet can
      *  show both mp4 qualities and an mp3 option). */
     private static boolean rich(ResolvedMedia r) {
-        return r != null && !r.videoStreams.isEmpty() && !r.audioStreams.isEmpty();
+        return r != null && r.usableCount(r.videoStreams) > 0 && r.usableCount(r.audioStreams) > 0;
     }
 
     /** Keep whichever of two candidates carries more downloadable options. */
     private static ResolvedMedia prefer(ResolvedMedia a, ResolvedMedia b) {
         if (a == null) return b;
         if (b == null) return a;
-        int sa = a.videoStreams.size() + a.audioStreams.size();
-        int sb = b.videoStreams.size() + b.audioStreams.size();
+        int sa = a.usableCount(a.videoStreams) + a.usableCount(a.audioStreams);
+        int sb = b.usableCount(b.videoStreams) + b.usableCount(b.audioStreams);
         return sb > sa ? b : a;
     }
 
@@ -394,17 +394,18 @@ public final class Resolvers {
             r.title = nonEmpty(d.optString("title", null), "TikTok video");
             JSONObject au = d.optJSONObject("author");
             r.author = au != null ? nonEmpty(au.optString("nickname", null), "TikTok") : "TikTok";
-            r.thumbUrl = nonEmpty(d.optString("cover", null), null);
+            r.thumbUrl = MediaUrls.tikwm(d.optString("cover", null));
             r.duration = d.optInt("duration", 0) > 0
                     ? String.format("%d:%02d", d.optInt("duration") / 60, d.optInt("duration") % 60) : "";
-            String hd = d.optString("hdplay", null);
-            String sd = d.optString("play", null);
-            addProgressive(r, hd, "MP4 • No watermark (HD)", 1080);
+            String hd = MediaUrls.tikwm(d.optString("hdplay", null));
+            String sd = MediaUrls.tikwm(d.optString("play", null));
+            // TikWM's hdplay/play names do not advertise pixel dimensions.
+            addProgressive(r, hd, "MP4 • No watermark (HD source)", heightFromUrl(hd));
             if (sd != null && !sd.equals(hd)) {
-                addProgressive(r, sd, "MP4 • No watermark", 720);
+                addProgressive(r, sd, "MP4 • No watermark", heightFromUrl(sd));
             }
-            addAudio(r, d.optString("music", null), "MP3 • Original sound");
-            return r;
+            addAudio(r, MediaUrls.tikwm(d.optString("music", null)), "Audio • Original sound");
+            return r.hasAnything() ? r : null;
         } catch (Throwable t) {
             Http.noteFailure(t);
             return null;
@@ -454,7 +455,7 @@ public final class Resolvers {
             List<String> uniq = new ArrayList<String>();
             for (String f : found) {
                 String abs = f.startsWith("//") ? "https:" + f : f;
-                if (abs.startsWith("http") && !uniq.contains(abs) && !isPlayerPage(abs)) {
+                if (MediaUrls.isHttps(abs) && !uniq.contains(abs) && !isPlayerPage(abs)) {
                     uniq.add(abs);
                 }
             }
@@ -523,13 +524,8 @@ public final class Resolvers {
     }
 
     private static void addProgressive(ResolvedMedia r, String url, String label, int height) {
-        if (url == null || url.isEmpty()) {
+        if (!MediaUrls.isHttps(url)) {
             return;
-        }
-        if (url.startsWith("//")) {
-            url = "https:" + url;
-        } else if (url.startsWith("/")) {
-            url = "https://www.tikwm.com" + url;
         }
         StreamOption o = new StreamOption();
         o.url = url;
@@ -542,17 +538,18 @@ public final class Resolvers {
     }
 
     private static void addAudio(ResolvedMedia r, String url, String label) {
-        if (url == null || url.isEmpty()) {
+        if (!MediaUrls.isHttps(url)) {
             return;
         }
         StreamOption o = new StreamOption();
         o.url = url;
-        o.mimeType = "audio/mpeg";
+        String mime = guessMime(url);
+        o.mimeType = mime.startsWith("audio/") ? mime : "audio/mpeg";
         o.label = label;
         o.sub = "Audio";
         o.audioOnly = true;
-        o.bitrate = 128;
         r.audioStreams.add(o);
+        r.bestAudio = o;
     }
 
     // ---------------------------------------------------------------- meta helpers
@@ -692,6 +689,7 @@ public final class Resolvers {
         try {
             String u = url;
             for (int hop = 0; hop < 4 && u != null; hop++) {
+                if (Thread.currentThread().isInterrupted() || !MediaUrls.isHttps(u)) return -1;
                 HttpURLConnection c = (HttpURLConnection) new java.net.URL(u).openConnection();
                 c.setRequestMethod("HEAD");
                 c.setInstanceFollowRedirects(false);

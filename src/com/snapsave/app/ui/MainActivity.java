@@ -75,7 +75,11 @@ public class MainActivity extends Activity {
         }
 
         App.get().downloads().addListener(refreshListener);
-        select(0);
+        int initialTab = savedInstanceState != null ? savedInstanceState.getInt("tab", 0) : 0;
+        if (savedInstanceState == null && getIntent() != null && getIntent().hasExtra("tab")) {
+            initialTab = getIntent().getIntExtra("tab", 0);
+        }
+        select(initialTab >= 0 && initialTab < screens.length ? initialTab : 0);
         requestRuntimePermissions();
 
         String url = getIntent() != null ? getIntent().getStringExtra("url") : null;
@@ -89,6 +93,11 @@ public class MainActivity extends Activity {
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
+        setIntent(intent);
+        if (intent != null && intent.hasExtra("tab")) {
+            int tab = intent.getIntExtra("tab", 0);
+            if (tab >= 0 && tab < screens.length) select(tab);
+        }
         if (intent != null && intent.getStringExtra("url") != null) {
             lastPromptedUrl = intent.getStringExtra("url");
             select(1);
@@ -97,7 +106,25 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onSaveInstanceState(Bundle outState) {
+        outState.putInt("tab", current);
+        super.onSaveInstanceState(outState);
+    }
+
+    public void withStoragePermission(Runnable granted) {
+        StoragePermission.run(this, granted);
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        StoragePermission.onResult(this, requestCode, permissions, grantResults);
+    }
+
+    @Override
     protected void onDestroy() {
+        DownloadSheet.dismissFor(this);
+        StoragePermission.onDestroy(this);
         App.get().downloads().removeListener(refreshListener);
         if (screens != null) {
             for (Screen s : screens) {
@@ -153,9 +180,8 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Ask for the one permission a downloader actually needs: notifications on Android 13+.
-     * Downloads are written to app-specific storage, which requires no media/storage grant —
-     * asking for it only produced an unexplained prompt on first launch.
+     * Notifications are the only launch-time prompt. Legacy public Downloads access is
+     * requested by StoragePermission when the user submits or resumes a download.
      */
     private void requestRuntimePermissions() {
         if (android.os.Build.VERSION.SDK_INT < 33) {

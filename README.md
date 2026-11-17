@@ -27,7 +27,7 @@ The app does not include a guaranteed public resolver service or demo downloads.
 
 ## Downloads and native engine
 
-The queue downloads streams through `HttpURLConnection`. A foreground download service supplies a notification while work is active, with pause/resume controls. Queue state and partial files support recovery; Android background restrictions, notification behavior, and process recovery still require device testing.
+The queue downloads streams through `HttpURLConnection`. A foreground download service supplies aggregate and per-task progress notifications while work is active, with pause/resume controls. Finished downloads publish automatically to `Download/SnapSave`; network partials, processing files and the library database stay private. Queue state and partial files support recovery; Android background restrictions, notification behavior, and process recovery still require device testing.
 
 Adaptive video/audio pairs are muxed through `CombinTask.combvideo` in `libvideo_v1.so`; M4A-to-MP3 conversion and DASH M4A normalization use `libmp3cvt.so`. The JNI bridge classes retain the original `com.snaptube.taskManager` names and native signatures. Native libraries are bundled for ARM only. A library loading or conversion failure must not be interpreted as verified output; check the resulting media on a supported device.
 
@@ -44,6 +44,16 @@ The UI includes Home, Browse/search, media detail and download options, Download
 - **Local thumbnails.** My Files and completed rows show a real video frame or embedded album art, decoded at thumbnail size and cached in memory/disk. Image files open through the system viewer after export.
 - **Background music.** `MusicService` keeps playback alive with the screen off, a media-playback foreground service, audio focus, headphone-unplug handling, and play/pause/stop from the notification. Closing the music screen no longer stops the track.
 - **Faster lists.** Completed folders no longer re-inflate on every 400 ms progress tick, storage stats refresh at most every 5 s, and remote thumbnails use a bounded memory + disk cache with downsampling.
+
+## Public downloads and media fixes (1.11)
+
+- Successful downloads publish automatically to `Download/SnapSave`. Android 10+ uses MediaStore; Android 6–9 requests storage permission when needed. Publication errors retain the validated private source for retry, and pending MediaStore entries support recovery.
+- Completed-file actions, local thumbnails and players accept canonical content URIs while retaining support for older private-file records.
+- TikTok and other resolver results require a usable stream or backend format. The download sheet guards empty selections and reports submission errors; shared text/URLs receive improved extraction.
+- Remote thumbnails use source-specific headers, hashed cache keys and bounded decoding; local artwork is downsampled.
+- Download rows and notifications show progress. Player layouts match the implemented share, save, file-details and fullscreen controls; decorative unsupported controls have been removed.
+
+This version was built and checked on the host. Android device testing was skipped at the user's request; these changes are not runtime-certified.
 
 ## Build
 
@@ -94,7 +104,7 @@ Keep the release keystore outside the project and assets. Do not commit or publi
 
 ## Verification and installation
 
-The final portable build passed v1/v2/v3 signature verification, 16 KiB ZIP alignment, credential/signing-file packaging scans, and the private `dataSync`/`mediaPlayback` service manifest checks. All **17 host regression cases passed**, including segmented range transfer and the `200` fallback. The resulting version `1.10` (code `11`) APK is `2,705,627` bytes, with SHA-256 `ec098e3e91e37738063470f7d5016ddbb6b69c352c9b6db75268ab4200f89340`. See [docs/VERIFICATION.md](docs/VERIFICATION.md) for the test scope and pending device checks.
+The current **1.11 (code 12)** build passed v1/v2/v3 signature verification, ZIP alignment and credential/signing-file packaging scans. All **17 host regression cases passed**, plus `ResolvedMediaValidityRegression`. The APK is **2,775,333 bytes**, with SHA-256 `9b58bfecd47bf251ddb5e09b4c0a6bd6ee1722c782bf1c162109b831a7e57f46`. The versioned artifact is [APK/SnapSave-v1.11.apk](APK/SnapSave-v1.11.apk). See [docs/VERIFICATION.md](docs/VERIFICATION.md) for the exact verification scope.
 
 ```bash
 JAVA_HOME='/path/to/jdk-17' bash tests/run-host-tests.sh
@@ -102,7 +112,7 @@ adb devices -l
 adb install -r SnapSave.apk
 ```
 
-No device runtime verification is recorded for this work. The available `Medium_Phone_API_36.1` emulator could not start because the Android Emulator hypervisor driver is not installed. Use a physical ARM Android device for native engine checks. An x86/x86_64 emulator does not verify the bundled ARM libraries.
+Android runtime tests for 1.11 were skipped at the user's request. Older v1.10 screenshots and device observations do not verify this build. Use a physical ARM Android device for native engine checks; an x86/x86_64 emulator does not verify the bundled ARM libraries.
 
 If installation fails, inspect the actual `adb install` error before changing the app. A differently signed existing package cannot be upgraded; uninstalling it deletes app data. Confirm the file hash, available storage, device API/ABI support, and permission to install from the selected source.
 

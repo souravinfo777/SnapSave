@@ -30,7 +30,26 @@ public class ResolvedMedia {
     /** Best audio-only track, used to pair with adaptive video for muxing. */
     public StreamOption bestAudio;
 
+    /** A progressive flag is metadata, not a selectable download. */
     public boolean hasAnything() {
-        return progressive || !videoStreams.isEmpty() || !audioStreams.isEmpty();
+        return usableCount(videoStreams) + usableCount(audioStreams) > 0;
+    }
+
+    public boolean isUsable(StreamOption option) {
+        return option != null && (MediaUrls.isHttps(option.url) || canResolve(option));
+    }
+
+    /** Only FastSaver currently implements lazy format finalization in the picker. */
+    public boolean canResolve(StreamOption option) {
+        return option != null && "fastsaver".equals(serverName)
+                && MediaUrls.isHttps(pageUrl) && MediaUrls.hasText(option.serverFormat);
+    }
+
+    public int usableCount(List<StreamOption> streams) {
+        int count = 0;
+        for (StreamOption option : streams) {
+            if (isUsable(option)) count++;
+        }
+        return count;
     }
 }
